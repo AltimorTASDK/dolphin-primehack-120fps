@@ -31,6 +31,8 @@ add_library(common
   Crypto/bn.h
   Crypto/ec.cpp
   Crypto/ec.h
+  Crypto/SHA1.cpp
+  Crypto/SHA1.h
   Debug/MemoryPatches.cpp
   Debug/MemoryPatches.h
   Debug/Threads.h
@@ -44,6 +46,8 @@ add_library(common
   EnumFormatter.h
   EnumMap.h
   Event.h
+  FatFsUtil.cpp
+  FatFsUtil.h
   FileSearch.cpp
   FileSearch.h
   FileUtil.cpp
@@ -79,9 +83,6 @@ add_library(common
   MathUtil.h
   Matrix.cpp
   Matrix.h
-  MD5.cpp
-  MD5.h
-  MemArena.cpp
   MemArena.h
   MemoryUtil.cpp
   MemoryUtil.h
@@ -135,18 +136,34 @@ add_library(common
   WorkQueueThread.h
 )
 
+if(MSVC AND _M_ARM_64)
+  # Workaround msvc arm64 optimizer bug
+  # TODO remove after updating to VS 17.4
+  set_source_files_properties(
+    Crypto/SHA1.cpp
+    PROPERTIES COMPILE_FLAGS "/d2ssa-peeps-post-color-")
+endif()
+
+if(NOT MSVC AND _M_ARM_64)
+  set_source_files_properties(
+    Crypto/AES.cpp
+    Crypto/SHA1.cpp
+    PROPERTIES COMPILE_FLAGS "-march=armv8-a+crypto")
+endif()
+
 target_link_libraries(common
 PUBLIC
   ${CMAKE_THREAD_LIBS_INIT}
   enet
   fmt::fmt
   ${MBEDTLS_LIBRARIES}
-  minizip
+  minizip-ng
 
 PRIVATE
   ${CURL_LIBRARIES}
+  FatFs
   ${ICONV_LIBRARIES}
-  png
+  spng
   ${VTUNE_LIBRARIES}
 )
 
@@ -165,7 +182,7 @@ elseif(WIN32)
     winmm.lib
   )
   if (_M_X86_64)
-	  target_link_libraries(common PRIVATE opengl32.lib)
+    target_link_libraries(common PRIVATE opengl32.lib)
   endif()
 elseif (ANDROID)
   target_link_libraries(common
@@ -181,16 +198,19 @@ if(ANDROID)
     AndroidAnalytics.cpp
     AndroidAnalytics.h
     Logging/ConsoleListenerDroid.cpp
+    MemArenaAndroid.cpp
   )
 elseif(WIN32)
   target_sources(common PRIVATE
     LdrWatcher.cpp
     LdrWatcher.h
     Logging/ConsoleListenerWin.cpp
+    MemArenaWin.cpp
   )
 else()
   target_sources(common PRIVATE
     Logging/ConsoleListenerNix.cpp
+    MemArenaUnix.cpp
   )
 endif()
 
@@ -284,6 +304,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(common PUBLIC dl rt)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  target_sources(common PRIVATE HRWrap.h HRWrap.cpp)
+endif()
+
 if(USE_UPNP)
   target_link_libraries(common PRIVATE Miniupnpc::miniupnpc)
 endif()
@@ -301,4 +325,9 @@ if(UNIX)
   endif()
 elseif(WIN32)
   target_link_libraries(common PRIVATE "-INCLUDE:enableCompatPatches")
+endif()
+
+if(MSVC)
+  # Add precompiled header
+  target_link_libraries(common PRIVATE use_pch)
 endif()

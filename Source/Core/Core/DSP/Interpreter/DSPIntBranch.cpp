@@ -3,8 +3,9 @@
 //
 // Additional copyrights go to Duddie and Tratax (c) 2004
 
-#include "Core/DSP/DSPCore.h"
 #include "Core/DSP/Interpreter/DSPInterpreter.h"
+
+#include "Core/DSP/DSPCore.h"
 
 namespace DSP::Interpreter
 {
@@ -126,7 +127,7 @@ void Interpreter::rti(const UDSPInstruction opc)
 void Interpreter::halt(const UDSPInstruction)
 {
   auto& state = m_dsp_core.DSPState();
-  state.cr |= CR_HALT;
+  state.control_reg |= CR_HALT;
   state.pc--;
 }
 

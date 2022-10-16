@@ -97,6 +97,20 @@
         <item>8</item>
     </integer-array>
 
+    <!-- Slot SP1 Device selection -->
+    <string-array name="serialPort1DeviceEntries" translatable="false">
+        <item>Nothing</item>
+        <item>Dummy</item>
+        <item>Broadband Adapter (XLink Kai)</item>
+        <item>Broadband Adapter (HLE)</item>
+    </string-array>
+    <integer-array name="serialPort1DeviceValues" translatable="false">
+        <item>255</item>
+        <item>0</item>
+        <item>10</item>
+        <item>12</item>
+    </integer-array>
+
     <!-- GameCube System Languages -->
     <string-array name="wiiSystemLanguageEntries">
         <item>Japanese</item>
@@ -207,9 +221,9 @@
 
     <!-- Texture Cache Accuracy Preference -->
     <string-array name="textureCacheAccuracyEntries" translatable="false">
-        <item>Low</item>
+        <item>Fast</item>
         <item>Medium</item>
-        <item>High</item>
+        <item>Safe</item>
     </string-array>
     <integer-array name="textureCacheAccuracyValues" translatable="false">
         <item>128</item>
@@ -433,6 +447,12 @@
         <item>Right Stick</item>
     </string-array>
 
+    <string-array name="irModeEntries">
+        <item>Disabled</item>
+        <item>Follow</item>
+        <item>Drag</item>
+    </string-array>
+
     <string-array name="doubleTap">
         <item>Button A</item>
         <item>Button B</item>
@@ -457,6 +477,34 @@
         <item>8</item>
         <item>1</item>
         <item>-1</item>
+    </integer-array>
+
+    <!-- Monet must always have a value exclusive to >= API 31 -->
+    <string-array name="themeEntries">
+        <item>Default</item>
+        <item>Material Default</item>
+        <item>Green</item>
+        <item>Pink</item>
+    </string-array>
+    <integer-array name="themeValues">
+        <item>0</item>
+        <item>2</item>
+        <item>3</item>
+        <item>4</item>
+    </integer-array>
+    <string-array name="themeEntriesA12">
+        <item>Default</item>
+        <item>Material You</item>
+        <item>Material Default</item>
+        <item>Green</item>
+        <item>Pink</item>
+    </string-array>
+    <integer-array name="themeValuesA12">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+        <item>4</item>
     </integer-array>
 
     <string-array name="synchronizeGpuThreadEntries">

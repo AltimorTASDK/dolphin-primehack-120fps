@@ -1,6 +1,8 @@
 // Copyright 2008 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "Core/IOS/FS/HostBackend/FS.h"
+
 #include <algorithm>
 #include <optional>
 #include <string_view>
@@ -17,7 +19,6 @@
 #include "Common/StringUtil.h"
 #include "Common/Swap.h"
 #include "Core/IOS/ES/ES.h"
-#include "Core/IOS/FS/HostBackend/FS.h"
 #include "Core/IOS/IOS.h"
 
 namespace IOS::HLE::FS
@@ -116,6 +117,8 @@ HostFileSystem::HostFileSystem(const std::string& root_path,
                                std::vector<NandRedirect> nand_redirects)
     : m_root_path{root_path}, m_nand_redirects(std::move(nand_redirects))
 {
+  while (StringEndsWith(m_root_path, "/"))
+    m_root_path.pop_back();
   File::CreateFullPath(m_root_path + "/");
   ResetFst();
   LoadFst();
@@ -257,7 +260,7 @@ void HostFileSystem::DoState(PointerWrap& p)
 
   // handle /tmp
   std::string Path = BuildFilename("/tmp").host_path;
-  if (p.GetMode() == PointerWrap::MODE_READ)
+  if (p.IsReadMode())
   {
     File::DeleteDirRecursively(Path);
     File::CreateDir(Path);
@@ -549,16 +552,20 @@ ResultCode HostFileSystem::Rename(Uid uid, Gid gid, const std::string& old_path,
     }
   }
 
-  // Finally, remove the child from the old parent and move it to the new parent.
   FstEntry* new_entry = GetFstEntryForPath(new_path);
+  new_entry->name = split_new_path.file_name;
+
+  // Finally, remove the child from the old parent and move it to the new parent.
   const auto it = std::find_if(old_parent->children.begin(), old_parent->children.end(),
                                GetNamePredicate(split_old_path.file_name));
   if (it != old_parent->children.end())
   {
-    *new_entry = *it;
+    new_entry->data = it->data;
+    new_entry->children = it->children;
+
     old_parent->children.erase(it);
   }
-  new_entry->name = split_new_path.file_name;
+
   SaveFst();
 
   return ResultCode::Success;
@@ -671,11 +678,15 @@ ResultCode HostFileSystem::SetMetadata(Uid caller_uid, const std::string& path, 
   if (entry->data.uid != uid && entry->data.is_file && !is_empty)
     return ResultCode::FileNotEmpty;
 
-  entry->data.gid = gid;
-  entry->data.uid = uid;
-  entry->data.attribute = attr;
-  entry->data.modes = modes;
-  SaveFst();
+  if (entry->data.gid != gid || entry->data.uid != uid || entry->data.attribute != attr ||
+      entry->data.modes != modes)
+  {
+    entry->data.gid = gid;
+    entry->data.uid = uid;
+    entry->data.attribute = attr;
+    entry->data.modes = modes;
+    SaveFst();
+  }
 
   return ResultCode::Success;
 }

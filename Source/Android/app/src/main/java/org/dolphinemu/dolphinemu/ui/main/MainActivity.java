@@ -9,12 +9,12 @@ import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+import androidx.core.splashscreen.SplashScreen;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.viewpager.widget.ViewPager;
 
@@ -26,10 +26,9 @@ import org.dolphinemu.dolphinemu.activities.EmulationActivity;
 import org.dolphinemu.dolphinemu.adapters.PlatformPagerAdapter;
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig;
-import org.dolphinemu.dolphinemu.features.settings.model.Settings;
 import org.dolphinemu.dolphinemu.features.settings.ui.MenuTag;
 import org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity;
-import org.dolphinemu.dolphinemu.services.GameFileCacheService;
+import org.dolphinemu.dolphinemu.services.GameFileCacheManager;
 import org.dolphinemu.dolphinemu.ui.platform.Platform;
 import org.dolphinemu.dolphinemu.ui.platform.PlatformGamesView;
 import org.dolphinemu.dolphinemu.utils.Action1;
@@ -38,24 +37,34 @@ import org.dolphinemu.dolphinemu.utils.DirectoryInitialization;
 import org.dolphinemu.dolphinemu.utils.FileBrowserHelper;
 import org.dolphinemu.dolphinemu.utils.PermissionsHandler;
 import org.dolphinemu.dolphinemu.utils.StartupHandler;
+import org.dolphinemu.dolphinemu.utils.ThemeHelper;
+import org.dolphinemu.dolphinemu.utils.WiiUtils;
 
 /**
  * The main Activity of the Lollipop style UI. Manages several PlatformGamesFragments, which
  * individually display a grid of available games for each Fragment, in a tabbed layout.
  */
 public final class MainActivity extends AppCompatActivity
-        implements MainView, SwipeRefreshLayout.OnRefreshListener
+        implements MainView, SwipeRefreshLayout.OnRefreshListener, ThemeProvider
 {
   private ViewPager mViewPager;
   private Toolbar mToolbar;
   private TabLayout mTabLayout;
   private FloatingActionButton mFab;
 
+  private int mThemeId;
+
   private final MainPresenter mPresenter = new MainPresenter(this, this);
 
   @Override
   protected void onCreate(Bundle savedInstanceState)
   {
+    SplashScreen splashScreen = SplashScreen.installSplashScreen(this);
+    splashScreen.setKeepOnScreenCondition(
+            () -> !DirectoryInitialization.areDolphinDirectoriesReady());
+
+    ThemeHelper.setTheme(this);
+
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_main);
 
@@ -70,25 +79,30 @@ public final class MainActivity extends AppCompatActivity
 
     // Stuff in this block only happens when this activity is newly created (i.e. not a rotation)
     if (savedInstanceState == null)
+    {
       StartupHandler.HandleInit(this);
+      new AfterDirectoryInitializationRunner().runWithLifecycle(this, this::checkTheme);
+    }
 
     if (!DirectoryInitialization.isWaitingForWriteAccess(this))
     {
       new AfterDirectoryInitializationRunner()
-              .run(this, false, this::setPlatformTabsAndStartGameFileCacheService);
+              .runWithLifecycle(this, this::setPlatformTabsAndStartGameFileCacheService);
     }
   }
 
   @Override
   protected void onResume()
   {
+    ThemeHelper.setCorrectTheme(this);
+
     super.onResume();
 
     if (DirectoryInitialization.shouldStart(this))
     {
       DirectoryInitialization.start(this);
       new AfterDirectoryInitializationRunner()
-              .run(this, false, this::setPlatformTabsAndStartGameFileCacheService);
+              .runWithLifecycle(this, this::setPlatformTabsAndStartGameFileCacheService);
     }
 
     mPresenter.onResume();
@@ -144,6 +158,14 @@ public final class MainActivity extends AppCompatActivity
   {
     MenuInflater inflater = getMenuInflater();
     inflater.inflate(R.menu.menu_game_grid, menu);
+
+    if (WiiUtils.isSystemMenuInstalled())
+    {
+      menu.findItem(R.id.menu_load_wii_system_menu).setTitle(
+              getString(R.string.grid_menu_load_wii_system_menu_installed,
+                      WiiUtils.getSystemMenuVersion()));
+    }
+
     return true;
   }
 
@@ -256,7 +278,7 @@ public final class MainActivity extends AppCompatActivity
 
       DirectoryInitialization.start(this);
       new AfterDirectoryInitializationRunner()
-              .run(this, false, this::setPlatformTabsAndStartGameFileCacheService);
+              .runWithLifecycle(this, this::setPlatformTabsAndStartGameFileCacheService);
     }
   }
 
@@ -279,7 +301,7 @@ public final class MainActivity extends AppCompatActivity
   public void onRefresh()
   {
     setRefreshing(true);
-    GameFileCacheService.startRescan(this);
+    GameFileCacheManager.startRescan(this);
   }
 
   /**
@@ -324,7 +346,7 @@ public final class MainActivity extends AppCompatActivity
   private void setPlatformTabsAndStartGameFileCacheService()
   {
     PlatformPagerAdapter platformPagerAdapter = new PlatformPagerAdapter(
-            getSupportFragmentManager(), this, this);
+            getSupportFragmentManager(), this);
     mViewPager.setAdapter(platformPagerAdapter);
     mViewPager.setOffscreenPageLimit(platformPagerAdapter.getCount());
     mTabLayout.setupWithViewPager(mViewPager);
@@ -338,9 +360,32 @@ public final class MainActivity extends AppCompatActivity
       }
     });
 
+    for (int i = 0; i < PlatformPagerAdapter.TAB_ICONS.length; i++)
+    {
+      mTabLayout.getTabAt(i).setIcon(PlatformPagerAdapter.TAB_ICONS[i]);
+    }
+
     mViewPager.setCurrentItem(IntSetting.MAIN_LAST_PLATFORM_TAB.getIntGlobal());
 
     showGames();
-    GameFileCacheService.startLoad(this);
+    GameFileCacheManager.startLoad(this);
+  }
+
+  @Override
+  public void setTheme(int themeId)
+  {
+    super.setTheme(themeId);
+    this.mThemeId = themeId;
+  }
+
+  @Override
+  public int getThemeId()
+  {
+    return mThemeId;
+  }
+
+  private void checkTheme()
+  {
+    ThemeHelper.setCorrectTheme(this);
   }
 }

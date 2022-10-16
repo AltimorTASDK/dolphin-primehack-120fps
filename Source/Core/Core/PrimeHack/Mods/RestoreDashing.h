@@ -10,8 +10,6 @@ namespace prime {
     bool init_mod(Game game, Region region) override {
       // d0210014 d0010010 4b -> pattern to search for CPlayer::FinishSidewaysDash() for Prime 2 GC
       // d0210024 d0010020 4b -> pattern to search for CPlayer::FinishSidewaysDash() for Prime 2 and 3 Wii
-      u8 version = read8(0x80000007);
-
       switch (game) {
       case Game::PRIME_1:
         if (region == Region::NTSC_U) {
@@ -28,8 +26,7 @@ namespace prime {
           add_code_change(0x80194df8, 0x4800001c);
           // stop dash when done dashing
           add_code_change(0x80192f58, 0x881f037c); // CPlayer + 0x37c
-        }
-        else { // region == Region::NTSC-J
+        } else { // region == Region::NTSC-J
           // remove scan visor check
           add_code_change(0x80193eb4, 0x48000018);
           // restore dashing speed
@@ -39,16 +36,16 @@ namespace prime {
         }
         break;
       case Game::PRIME_1_GCN:
-        if (region == Region::NTSC_U && version == 2) {
-          // remove scan visor check
-          add_code_change(0x802888d0, 0x48000018);
-        } else if (region == Region::PAL) {
+        if (region == Region::PAL) {
           // remove scan visor check
           add_code_change(0x80275328, 0x48000018);
         } else if (region == Region::NTSC_J) {
           // remove scan visor check
           add_code_change(0x802770e4, 0x48000018);
         }
+        break;
+      case Game::PRIME_1_GCN_R2:
+        add_code_change(0x802888d0, 0x48000018);
         break;
       case Game::PRIME_2:
         if (region == Region::NTSC_U) {

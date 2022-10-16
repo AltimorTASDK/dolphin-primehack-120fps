@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 
 #include "Common/CommonTypes.h"
+#include "Common/EnumMap.h"
 #include "Common/Logging/Log.h"
 
 #include "Core/ConfigManager.h"
@@ -42,7 +43,8 @@
 
 using namespace BPFunctions;
 
-static const float s_gammaLUT[] = {1.0f, 1.7f, 2.2f, 1.0f};
+static constexpr Common::EnumMap<float, GammaCorrection::Invalid2_2> s_gammaLUT = {1.0f, 1.7f, 2.2f,
+                                                                                   2.2f};
 
 void BPInit()
 {
@@ -50,7 +52,7 @@ void BPInit()
   bpmem.bpMask = 0xFFFFFF;
 }
 
-static void BPWritten(const BPCmd& bp)
+static void BPWritten(const BPCmd& bp, int cycles_into_future)
 {
   /*
   ----------------------------------------------------------------------------------------------------------------
@@ -131,8 +133,6 @@ static void BPWritten(const BPCmd& bp)
   case BPMEM_SCISSORTL:      // Scissor Rectable Top, Left
   case BPMEM_SCISSORBR:      // Scissor Rectable Bottom, Right
   case BPMEM_SCISSOROFFSET:  // Scissor Offset
-    SetScissor();
-    SetViewport();
     VertexShaderManager::SetViewportChanged();
     GeometryShaderManager::SetViewportChanged();
     return;
@@ -180,7 +180,7 @@ static void BPWritten(const BPCmd& bp)
       g_texture_cache->FlushEFBCopies();
       g_framebuffer_manager->InvalidatePeekCache(false);
       if (!Fifo::UseDeterministicGPUThread())
-        PixelEngine::SetFinish();  // may generate interrupt
+        PixelEngine::SetFinish(cycles_into_future);  // may generate interrupt
       DEBUG_LOG_FMT(VIDEO, "GXSetDrawDone SetPEFinish (value: {:#04X})", bp.newvalue & 0xFFFF);
       return;
 
@@ -193,14 +193,14 @@ static void BPWritten(const BPCmd& bp)
     g_texture_cache->FlushEFBCopies();
     g_framebuffer_manager->InvalidatePeekCache(false);
     if (!Fifo::UseDeterministicGPUThread())
-      PixelEngine::SetToken(static_cast<u16>(bp.newvalue & 0xFFFF), false);
+      PixelEngine::SetToken(static_cast<u16>(bp.newvalue & 0xFFFF), false, cycles_into_future);
     DEBUG_LOG_FMT(VIDEO, "SetPEToken {:#06X}", bp.newvalue & 0xFFFF);
     return;
   case BPMEM_PE_TOKEN_INT_ID:  // Pixel Engine Interrupt Token ID
     g_texture_cache->FlushEFBCopies();
     g_framebuffer_manager->InvalidatePeekCache(false);
     if (!Fifo::UseDeterministicGPUThread())
-      PixelEngine::SetToken(static_cast<u16>(bp.newvalue & 0xFFFF), true);
+      PixelEngine::SetToken(static_cast<u16>(bp.newvalue & 0xFFFF), true, cycles_into_future);
     DEBUG_LOG_FMT(VIDEO, "SetPEToken + INT {:#06X}", bp.newvalue & 0xFFFF);
     return;
 
@@ -275,13 +275,12 @@ static void BPWritten(const BPCmd& bp)
     {
       // bpmem.zcontrol.pixel_format to PixelFormat::Z24 is when the game wants to copy from ZBuffer
       // (Zbuffer uses 24-bit Format)
-      static constexpr CopyFilterCoefficients::Values filter_coefficients = {
-          {0, 0, 21, 22, 21, 0, 0}};
       bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
       g_texture_cache->CopyRenderTargetToTexture(
           destAddr, PE_copy.tp_realFormat(), copy_width, copy_height, destStride, is_depth_copy,
-          srcRect, PE_copy.intensity_fmt, PE_copy.half_scale, 1.0f, 1.0f,
-          bpmem.triggerEFBCopy.clamp_top, bpmem.triggerEFBCopy.clamp_bottom, filter_coefficients);
+          srcRect, PE_copy.intensity_fmt && PE_copy.auto_conv, PE_copy.half_scale, 1.0f,
+          s_gammaLUT[PE_copy.gamma], bpmem.triggerEFBCopy.clamp_top,
+          bpmem.triggerEFBCopy.clamp_bottom, bpmem.copyfilter.GetCoefficients());
     }
     else
     {
@@ -717,39 +716,37 @@ static void BPWritten(const BPCmd& bp)
                bp.newvalue);
 }
 
-// Call browser: OpcodeDecoding.cpp ExecuteDisplayList > Decode() > LoadBPReg()
-void LoadBPReg(u32 value0)
+// Call browser: OpcodeDecoding.cpp RunCallback::OnBP()
+void LoadBPReg(u8 reg, u32 value, int cycles_into_future)
 {
-  int regNum = value0 >> 24;
-  int oldval = ((u32*)&bpmem)[regNum];
-  int newval = (oldval & ~bpmem.bpMask) | (value0 & bpmem.bpMask);
+  int oldval = ((u32*)&bpmem)[reg];
+  int newval = (oldval & ~bpmem.bpMask) | (value & bpmem.bpMask);
   int changes = (oldval ^ newval) & 0xFFFFFF;
 
-  BPCmd bp = {regNum, changes, newval};
+  BPCmd bp = {reg, changes, newval};
 
   // Reset the mask register if we're not trying to set it ourselves.
-  if (regNum != BPMEM_BP_MASK)
+  if (reg != BPMEM_BP_MASK)
     bpmem.bpMask = 0xFFFFFF;
 
-  BPWritten(bp);
+  BPWritten(bp, cycles_into_future);
 }
 
-void LoadBPRegPreprocess(u32 value0)
+void LoadBPRegPreprocess(u8 reg, u32 value, int cycles_into_future)
 {
-  int regNum = value0 >> 24;
-  // masking could hypothetically be a problem
-  u32 newval = value0 & 0xffffff;
-  switch (regNum)
+  // masking via BPMEM_BP_MASK could hypothetically be a problem
+  u32 newval = value & 0xffffff;
+  switch (reg)
   {
   case BPMEM_SETDRAWDONE:
     if ((newval & 0xff) == 0x02)
-      PixelEngine::SetFinish();
+      PixelEngine::SetFinish(cycles_into_future);
     break;
   case BPMEM_PE_TOKEN_ID:
-    PixelEngine::SetToken(newval & 0xffff, false);
+    PixelEngine::SetToken(newval & 0xffff, false, cycles_into_future);
     break;
   case BPMEM_PE_TOKEN_INT_ID:  // Pixel Engine Interrupt Token ID
-    PixelEngine::SetToken(newval & 0xffff, true);
+    PixelEngine::SetToken(newval & 0xffff, true, cycles_into_future);
     break;
   }
 }
@@ -814,23 +811,14 @@ std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
   case BPMEM_IND_CMD + 13:
   case BPMEM_IND_CMD + 14:
   case BPMEM_IND_CMD + 15:
-    return std::make_pair(fmt::format("BPMEM_IND_CMD command {}", cmd - BPMEM_IND_CMD),
+    return std::make_pair(fmt::format("BPMEM_IND_CMD number {}", cmd - BPMEM_IND_CMD),
                           fmt::to_string(TevStageIndirect{.fullhex = cmddata}));
 
   case BPMEM_SCISSORTL:  // 0x20
-  {
-    const X12Y12 top_left{.hex = cmddata};
-    return std::make_pair(RegName(BPMEM_SCISSORTL),
-                          fmt::format("Scissor Top: {}\nScissor Left: {}", top_left.y, top_left.x));
-  }
+    return std::make_pair(RegName(BPMEM_SCISSORTL), fmt::to_string(ScissorPos{.hex = cmddata}));
 
   case BPMEM_SCISSORBR:  // 0x21
-  {
-    const X12Y12 bottom_right{.hex = cmddata};
-    return std::make_pair(
-        RegName(BPMEM_SCISSORBR),
-        fmt::format("Scissor Bottom: {}\nScissor Right: {}", bottom_right.y, bottom_right.x));
-  }
+    return std::make_pair(RegName(BPMEM_SCISSORBR), fmt::to_string(ScissorPos{.hex = cmddata}));
 
   case BPMEM_LINEPTWIDTH:  // 0x22
     return std::make_pair(RegName(BPMEM_LINEPTWIDTH), fmt::to_string(LPSize{.hex = cmddata}));
@@ -844,14 +832,12 @@ std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
     // TODO: Description
 
   case BPMEM_RAS1_SS0:  // 0x25
-    return std::make_pair(
-        RegName(BPMEM_RAS1_SS0),
-        fmt::format("Indirect texture stages 0 and 1:\n{}", TEXSCALE{.hex = cmddata}));
+    return std::make_pair(RegName(BPMEM_RAS1_SS0),
+                          fmt::to_string(std::make_pair(cmd, TEXSCALE{.hex = cmddata})));
 
   case BPMEM_RAS1_SS1:  // 0x26
-    return std::make_pair(
-        RegName(BPMEM_RAS1_SS1),
-        fmt::format("Indirect texture stages 2 and 3:\n{}", TEXSCALE{.hex = cmddata}));
+    return std::make_pair(RegName(BPMEM_RAS1_SS1),
+                          fmt::to_string(std::make_pair(cmd, TEXSCALE{.hex = cmddata})));
 
   case BPMEM_IREF:  // 0x27
     return std::make_pair(RegName(BPMEM_IREF), fmt::to_string(RAS1_IREF{.hex = cmddata}));
@@ -865,7 +851,7 @@ std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
   case BPMEM_TREF + 6:
   case BPMEM_TREF + 7:
     return std::make_pair(fmt::format("BPMEM_TREF number {}", cmd - BPMEM_TREF),
-                          fmt::to_string(TwoTevStageOrders{.hex = cmddata}));
+                          fmt::to_string(std::make_pair(cmd, TwoTevStageOrders{.hex = cmddata})));
 
   case BPMEM_SU_SSIZE:  // 0x30
   case BPMEM_SU_SSIZE + 2:
@@ -876,7 +862,7 @@ std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
   case BPMEM_SU_SSIZE + 12:
   case BPMEM_SU_SSIZE + 14:
     return std::make_pair(fmt::format("BPMEM_SU_SSIZE number {}", (cmd - BPMEM_SU_SSIZE) / 2),
-                          fmt::format("S size info:\n{}", TCInfo{.hex = cmddata}));
+                          fmt::to_string(std::make_pair(true, TCInfo{.hex = cmddata})));
 
   case BPMEM_SU_TSIZE:  // 0x31
   case BPMEM_SU_TSIZE + 2:
@@ -887,7 +873,7 @@ std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
   case BPMEM_SU_TSIZE + 12:
   case BPMEM_SU_TSIZE + 14:
     return std::make_pair(fmt::format("BPMEM_SU_TSIZE number {}", (cmd - BPMEM_SU_TSIZE) / 2),
-                          fmt::format("T size info:\n{}", TCInfo{.hex = cmddata}));
+                          fmt::to_string(std::make_pair(false, TCInfo{.hex = cmddata})));
 
   case BPMEM_ZMODE:  // 0x40
     return std::make_pair(RegName(BPMEM_ZMODE), fmt::format("Z mode: {}", ZMode{.hex = cmddata}));
@@ -1005,11 +991,8 @@ std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
     // TODO: Description
 
   case BPMEM_SCISSOROFFSET:  // 0x59
-  {
-    const S32X10Y10 xy{.hex = cmddata};
     return std::make_pair(RegName(BPMEM_SCISSOROFFSET),
-                          fmt::format("Scissor X offset: {}\nScissor Y offset: {}", xy.x, xy.y));
-  }
+                          fmt::to_string(ScissorOffset{.hex = cmddata}));
 
   case BPMEM_PRELOAD_ADDR:  // 0x60
     return DescriptionlessReg(BPMEM_PRELOAD_ADDR);
@@ -1264,7 +1247,7 @@ std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
   case BPMEM_TEV_KSEL + 6:
   case BPMEM_TEV_KSEL + 7:
     return std::make_pair(fmt::format("BPMEM_TEV_KSEL number {}", cmd - BPMEM_TEV_KSEL),
-                          fmt::to_string(TevKSel{.hex = cmddata}));
+                          fmt::to_string(std::make_pair(cmd, TevKSel{.hex = cmddata})));
 
   case BPMEM_BP_MASK:  // 0xFE
     return std::make_pair(RegName(BPMEM_BP_MASK),
@@ -1287,8 +1270,7 @@ void BPReload()
   // let's not risk actually replaying any writes.
   // note that PixelShaderManager is already covered since it has its own DoState.
   SetGenerationMode();
-  SetScissor();
-  SetViewport();
+  SetScissorAndViewport();
   SetDepthMode();
   SetBlendMode();
   OnPixelFormatChange();

@@ -8,8 +8,9 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
-#include "Common/IniFile.h"
+#include "Common/IOFile.h"
 
+#include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/EXI/EXI_Channel.h"
@@ -20,11 +21,11 @@
 #include "Core/HW/Sram.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
+#include "Core/System.h"
 
 #include "DiscIO/Enums.h"
 
-Sram g_SRAM;
-bool g_SRAM_netplay_initialized = false;
+bool s_using_overridden_sram = false;
 
 namespace ExpansionInterface
 {
@@ -38,53 +39,96 @@ static void UpdateInterruptsCallback(u64 userdata, s64 cycles_late);
 
 namespace
 {
-void AddMemoryCards(int i)
+void AddMemoryCard(Slot slot)
 {
-  TEXIDevices memorycard_device;
+  EXIDeviceType memorycard_device;
   if (Movie::IsPlayingInput() && Movie::IsConfigSaved())
   {
-    if (Movie::IsUsingMemcard(i))
+    if (Movie::IsUsingMemcard(slot))
     {
-      if (SConfig::GetInstance().m_EXIDevice[i] == EXIDEVICE_MEMORYCARDFOLDER)
-        memorycard_device = EXIDEVICE_MEMORYCARDFOLDER;
-      else
-        memorycard_device = EXIDEVICE_MEMORYCARD;
+      memorycard_device = Config::Get(Config::GetInfoForEXIDevice(slot));
+      if (memorycard_device != EXIDeviceType::MemoryCardFolder &&
+          memorycard_device != EXIDeviceType::MemoryCard)
+      {
+        PanicAlertFmtT(
+            "The movie indicates that a memory card should be inserted into {0:n}, but one is not "
+            "currently inserted (instead, {1} is inserted).  For the movie to sync properly, "
+            "please change the selected device to Memory Card or GCI Folder.",
+            slot, Common::GetStringT(fmt::format("{:n}", memorycard_device).c_str()));
+      }
     }
     else
     {
-      memorycard_device = EXIDEVICE_NONE;
+      memorycard_device = EXIDeviceType::None;
     }
   }
   else
   {
-    memorycard_device = SConfig::GetInstance().m_EXIDevice[i];
+    memorycard_device = Config::Get(Config::GetInfoForEXIDevice(slot));
   }
 
-  g_Channels[i]->AddDevice(memorycard_device, 0);
+  g_Channels[SlotToEXIChannel(slot)]->AddDevice(memorycard_device, SlotToEXIDevice(slot));
 }
 }  // namespace
 
-void Init()
+u8 SlotToEXIChannel(Slot slot)
 {
-  if (!g_SRAM_netplay_initialized)
+  switch (slot)
   {
-    InitSRAM();
+  case Slot::A:
+    return 0;
+  case Slot::B:
+    return 1;
+  case Slot::SP1:
+    return 0;
+  default:
+    PanicAlertFmt("Unhandled slot {}", slot);
+    return 0;
+  }
+}
+
+u8 SlotToEXIDevice(Slot slot)
+{
+  switch (slot)
+  {
+  case Slot::A:
+    return 0;
+  case Slot::B:
+    return 0;
+  case Slot::SP1:
+    return 2;
+  default:
+    PanicAlertFmt("Unhandled slot {}", slot);
+    return 0;
+  }
+}
+
+void Init(const Sram* override_sram)
+{
+  auto& sram = Core::System::GetInstance().GetSRAM();
+  if (override_sram)
+  {
+    sram = *override_sram;
+    s_using_overridden_sram = true;
+  }
+  else
+  {
+    InitSRAM(&sram, SConfig::GetInstance().m_strSRAM);
+    s_using_overridden_sram = false;
   }
 
   CEXIMemoryCard::Init();
 
   {
     u16 size_mbits = Memcard::MBIT_SIZE_MEMORY_CARD_2043;
-    int size_override;
-    IniFile gameIni = SConfig::GetInstance().LoadGameIni();
-    gameIni.GetOrCreateSection("Core")->Get("MemoryCardSize", &size_override, -1);
+    int size_override = Config::Get(Config::MAIN_MEMORY_CARD_SIZE);
     if (size_override >= 0 && size_override <= 4)
       size_mbits = Memcard::MBIT_SIZE_MEMORY_CARD_59 << size_override;
     const bool shift_jis =
-        SConfig::ToGameCubeRegion(SConfig::GetInstance().m_region) == DiscIO::Region::NTSC_J;
-    const CardFlashId& flash_id = g_SRAM.settings_ex.flash_id[Memcard::SLOT_A];
-    const u32 rtc_bias = g_SRAM.settings.rtc_bias;
-    const u32 sram_language = static_cast<u32>(g_SRAM.settings.language);
+        Config::ToGameCubeRegion(SConfig::GetInstance().m_region) == DiscIO::Region::NTSC_J;
+    const CardFlashId& flash_id = sram.settings_ex.flash_id[Memcard::SLOT_A];
+    const u32 rtc_bias = sram.settings.rtc_bias;
+    const u32 sram_language = static_cast<u32>(sram.settings.language);
     const u64 format_time =
         Common::Timer::GetLocalTimeSinceJan1970() - ExpansionInterface::CEXIIPL::GC_EPOCH;
 
@@ -97,12 +141,13 @@ void Init()
     }
   }
 
-  for (int i = 0; i < MAX_MEMORYCARD_SLOTS; i++)
-    AddMemoryCards(i);
+  for (Slot slot : MEMCARD_SLOTS)
+    AddMemoryCard(slot);
 
-  g_Channels[0]->AddDevice(EXIDEVICE_MASKROM, 1);
-  g_Channels[0]->AddDevice(SConfig::GetInstance().m_EXIDevice[2], 2);  // Serial Port 1
-  g_Channels[2]->AddDevice(EXIDEVICE_AD16, 0);
+  g_Channels[0]->AddDevice(EXIDeviceType::MaskROM, 1);
+  g_Channels[SlotToEXIChannel(Slot::SP1)]->AddDevice(Config::Get(Config::MAIN_SERIAL_PORT_1),
+                                                     SlotToEXIDevice(Slot::SP1));
+  g_Channels[2]->AddDevice(EXIDeviceType::AD16, 0);
 
   changeDevice = CoreTiming::RegisterEvent("ChangeEXIDevice", ChangeDeviceCallback);
   updateInterrupts = CoreTiming::RegisterEvent("EXIUpdateInterrupts", UpdateInterruptsCallback);
@@ -114,6 +159,13 @@ void Shutdown()
     channel.reset();
 
   CEXIMemoryCard::Shutdown();
+
+  if (!s_using_overridden_sram)
+  {
+    File::IOFile file(SConfig::GetInstance().m_strSRAM, "wb");
+    auto& sram = Core::System::GetInstance().GetSRAM();
+    file.WriteArray(&sram, 1);
+  }
 }
 
 void DoState(PointerWrap& p)
@@ -148,15 +200,20 @@ static void ChangeDeviceCallback(u64 userdata, s64 cyclesLate)
   u8 type = (u8)(userdata >> 16);
   u8 num = (u8)userdata;
 
-  g_Channels.at(channel)->AddDevice((TEXIDevices)type, num);
+  g_Channels.at(channel)->AddDevice(static_cast<EXIDeviceType>(type), num);
 }
 
-void ChangeDevice(const u8 channel, const TEXIDevices device_type, const u8 device_num,
+void ChangeDevice(Slot slot, EXIDeviceType device_type, CoreTiming::FromThread from_thread)
+{
+  ChangeDevice(SlotToEXIChannel(slot), SlotToEXIDevice(slot), device_type, from_thread);
+}
+
+void ChangeDevice(u8 channel, u8 device_num, EXIDeviceType device_type,
                   CoreTiming::FromThread from_thread)
 {
   // Let the hardware see no device for 1 second
   CoreTiming::ScheduleEvent(0, changeDevice,
-                            ((u64)channel << 32) | ((u64)EXIDEVICE_NONE << 16) | device_num,
+                            ((u64)channel << 32) | ((u64)EXIDeviceType::None << 16) | device_num,
                             from_thread);
   CoreTiming::ScheduleEvent(SystemTimers::GetTicksPerSecond(), changeDevice,
                             ((u64)channel << 32) | ((u64)device_type << 16) | device_num,
@@ -168,15 +225,9 @@ CEXIChannel* GetChannel(u32 index)
   return g_Channels.at(index).get();
 }
 
-IEXIDevice* FindDevice(TEXIDevices device_type, int customIndex)
+IEXIDevice* GetDevice(Slot slot)
 {
-  for (auto& channel : g_Channels)
-  {
-    IEXIDevice* device = channel->FindDevice(device_type, customIndex);
-    if (device)
-      return device;
-  }
-  return nullptr;
+  return g_Channels.at(SlotToEXIChannel(slot))->GetDevice(1 << SlotToEXIDevice(slot));
 }
 
 void UpdateInterrupts()

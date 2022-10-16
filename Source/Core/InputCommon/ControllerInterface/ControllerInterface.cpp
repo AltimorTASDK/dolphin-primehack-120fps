@@ -9,6 +9,7 @@
 #include "Common/Logging/Log.h"
 #include "Core/HW/WiimoteReal/WiimoteReal.h"
 #include "Core/PrimeHack/HackConfig.h"
+#include "InputCommon/GenericMouse.h"
 
 #ifdef CIFACE_USE_WIN32
 #include "InputCommon/ControllerInterface/Win32/Win32.h"
@@ -55,8 +56,6 @@ void ControllerInterface::Initialize(const WindowSystemInfo& wsi)
 
   m_populating_devices_counter = 1;
 
-  m_devices_mutex.lock();
-
 #ifdef CIFACE_USE_WIN32
   ciface::Win32::Init(wsi.render_window);
 #endif
@@ -88,8 +87,9 @@ void ControllerInterface::Initialize(const WindowSystemInfo& wsi)
 
   RefreshDevices();
 
+  // Devices writes are already protected by m_devices_population_mutex but this won't hurt
+  m_devices_mutex.lock();
   const bool devices_empty = m_devices.empty();
-
   m_devices_mutex.unlock();
 
   if (m_populating_devices_counter.fetch_sub(1) == 1 && !devices_empty)
@@ -122,17 +122,17 @@ void ControllerInterface::RefreshDevices(RefreshReason reason)
     std::lock_guard lk_pre_population(m_pre_population_mutex);
     // This is needed to stop its threads before locking our mutexes, to avoid deadlocks
     // (in case it tried to add a device after we had locked m_devices_population_mutex).
-    // There doesn't seem to be an easy to way to repopulate OSX devices without restarting
-    // its hotplug thread. This will not release its devices, that's still done below.
+    // There doesn't seem to be an easy to way to repopulate OSX devices without restarting its
+    // hotplug thread. This should not remove its devices, and if it did, calls should be ignored.
     ciface::OSX::DeInit();
   }
 #endif
 
-  // This lock has two main functions:
-  // -Avoid a deadlock between m_devices_mutex and ControllerEmu::s_state_mutex when
-  // InvokeDevicesChangedCallbacks() is called concurrently by two different threads.
-  // -Avoid devices being destroyed while others of the same type are being created.
-  // This wasn't thread safe in multiple device sources.
+  // We lock m_devices_population_mutex here to make everything simpler.
+  // Multiple devices classes have their own "hotplug" thread, and can add/remove devices at any
+  // time, while actual writes to "m_devices" are safe, the order in which they happen is not. That
+  // means a thread could be adding devices while we are removing them, or removing them as we are
+  // populating them (causing missing or duplicate devices).
   std::lock_guard lk_population(m_devices_population_mutex);
 
 #if defined(CIFACE_USE_WIN32) && !defined(CIFACE_USE_XLIB) && !defined(CIFACE_USE_OSX)
@@ -142,12 +142,9 @@ void ControllerInterface::RefreshDevices(RefreshReason reason)
   {
     m_populating_devices_counter.fetch_add(1);
 
-    {
-      std::lock_guard lk(m_devices_mutex);
-      // No need to do anything else in this case.
-      // Only (Win32) DInput needs the window handle to be updated.
-      ciface::Win32::ChangeWindow(m_wsi.render_window);
-    }
+    // No need to do anything else in this case.
+    // Only (Win32) DInput needs the window handle to be updated.
+    ciface::Win32::ChangeWindow(m_wsi.render_window);
 
     if (m_populating_devices_counter.fetch_sub(1) == 1)
       InvokeDevicesChangedCallbacks();
@@ -157,13 +154,6 @@ void ControllerInterface::RefreshDevices(RefreshReason reason)
 
   m_populating_devices_counter.fetch_add(1);
 
-  // We lock m_devices_mutex here to make everything simpler.
-  // Multiple devices classes have their own "hotplug" thread, and can add/remove devices at any
-  // time, while actual writes to "m_devices" are safe, the order in which they happen is not. That
-  // means a thread could be adding devices while we are removing them, or removing them as we are
-  // populating them (causing missing or duplicate devices).
-  m_devices_mutex.lock();
-
   // Make sure shared_ptr<Device> objects are released before repopulating.
   ClearDevices();
 
@@ -171,6 +161,13 @@ void ControllerInterface::RefreshDevices(RefreshReason reason)
   // with their own PlatformPopulateDevices().
   // This means that devices might end up in different order, unless we override their priority.
   // It also means they might appear as "disconnected" in the Qt UI for a tiny bit of time.
+  // This helps the emulation and host thread to not stall when repopulating devices for any reason.
+  // Every platform that adds a device that is meant to be used as default device should try to not
+  // do it async, to not risk the emulated controllers default config loading not finding a default
+  // device.
+
+  // An empty mouse class for when no platform specific one exists.
+  prime::g_mouse_input = new prime::NullMouse();
 
 #ifdef CIFACE_USE_WIN32
   ciface::Win32::PopulateDevices(m_wsi.render_surface);
@@ -209,8 +206,6 @@ void ControllerInterface::RefreshDevices(RefreshReason reason)
 
   WiimoteReal::PopulateDevices();
 
-  m_devices_mutex.unlock();
-
   if (m_populating_devices_counter.fetch_sub(1) == 1)
     InvokeDevicesChangedCallbacks();
 }
@@ -224,11 +219,7 @@ void ControllerInterface::PlatformPopulateDevices(std::function<void()> callback
 
   m_populating_devices_counter.fetch_add(1);
 
-  {
-    std::lock_guard lk(m_devices_mutex);
-
-    callback();
-  }
+  callback();
 
   if (m_populating_devices_counter.fetch_sub(1) == 1)
     InvokeDevicesChangedCallbacks();
@@ -273,8 +264,8 @@ void ControllerInterface::Shutdown()
 
   // Make sure no devices had been added within Shutdown() in the time
   // between checking they checked atomic m_is_init bool and we changed it.
-  // We couldn't have locked m_devices_mutex nor m_devices_population_mutex for the whole Shutdown()
-  // as they could cause deadlocks. Note that this is still not 100% safe as some backends are
+  // We couldn't have locked m_devices_population_mutex for the whole Shutdown()
+  // as it could cause deadlocks. Note that this is still not 100% safe as some backends are
   // shut down in other places, possibly adding devices after we have shut down, but the chances of
   // that happening are basically zero.
   ClearDevices();
@@ -297,8 +288,8 @@ void ControllerInterface::ClearDevices()
         o->SetState(0);
     }
 
-    // Devices will still be alive after this: there are shared ptrs around the code holding them,
-    // but InvokeDevicesChangedCallbacks() will clean all of them.
+    // Devices could still be alive after this as there might be shared ptrs around holding them.
+    // The InvokeDevicesChangedCallbacks() underneath should always clean all of them (it needs to).
     m_devices.clear();
   }
 
@@ -435,6 +426,16 @@ Common::Vec2 ControllerInterface::GetWindowInputScale() const
     return {1.f, ar};
   else
     return {1 / ar, 1.f};
+}
+
+void ControllerInterface::SetMouseCenteringRequested(bool center)
+{
+  m_requested_mouse_centering = center;
+}
+
+bool ControllerInterface::IsMouseCenteringRequested() const
+{
+  return m_requested_mouse_centering.load();
 }
 
 // Register a callback to be called when a device is added or removed (as from the input backends'

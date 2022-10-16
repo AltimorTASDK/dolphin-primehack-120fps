@@ -11,6 +11,8 @@
 #include <optional>
 #include <string>
 
+#include "Core/Boot/Boot.h"
+
 class QStackedWidget;
 class QString;
 
@@ -101,6 +103,8 @@ private:
   void StateSaveUndo();
   void StateSaveOldest();
   void SetStateSlot(int slot);
+  void IncrementSelectedStateSlot();
+  void DecrementSelectedStateSlot();
   void BootWiiSystemMenu();
 
   void PerformOnlineUpdate(const std::string& region);
@@ -133,13 +137,13 @@ private:
   };
 
   void ScanForSecondDiscAndStartGame(const UICommon::GameFile& game,
-                                     const std::optional<std::string>& savestate_path = {});
+                                     std::unique_ptr<BootSessionData> boot_session_data = nullptr);
   void StartGame(const QString& path, ScanForSecondDisc scan,
-                 const std::optional<std::string>& savestate_path = {});
+                 std::unique_ptr<BootSessionData> boot_session_data = nullptr);
   void StartGame(const std::string& path, ScanForSecondDisc scan,
-                 const std::optional<std::string>& savestate_path = {});
+                 std::unique_ptr<BootSessionData> boot_session_data = nullptr);
   void StartGame(const std::vector<std::string>& paths,
-                 const std::optional<std::string>& savestate_path = {});
+                 std::unique_ptr<BootSessionData> boot_session_data = nullptr);
   void StartGame(std::unique_ptr<BootParameters>&& parameters);
   void ShowRenderWidget();
   void HideRenderWidget(bool reinit = true, bool is_exit = false);

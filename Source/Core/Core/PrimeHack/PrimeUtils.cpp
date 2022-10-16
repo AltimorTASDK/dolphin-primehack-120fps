@@ -30,6 +30,7 @@ static int current_visor = 0;
 static std::array<bool, 4> beam_owned = {false, false, false, false};
 static std::array<bool, 4> visor_owned = {false, false, false, false};
 static bool noclip_enabled = false;
+static bool was_in_alternate = false;
 
 std::array<std::array<CodeChange, static_cast<int>(Game::MAX_VAL) + 1>,
   static_cast<int>(Region::MAX_VAL) + 1> noclip_enable_codes;
@@ -208,6 +209,27 @@ int get_beam_switch(std::array<int, 4> const& beams) {
   return -1;
 }
 
+void swap_alt_profiles(u32 ball_state, u32 transition_state)
+{
+  /* Ball State 1 - Morphed, Transition State 1 - Map */
+  if ((ball_state == 1 || ball_state == 2 || transition_state == 1) && !was_in_alternate)
+  {
+    std::string profile = GetProfiles().first;
+
+    if (!profile.empty() && (profile != std::string("Disabled"))) {
+      ChangeControllerProfileAlt(profile);
+    }
+    was_in_alternate = true;
+  }
+  else if ((ball_state == 0 && transition_state != 1) && was_in_alternate)
+  {
+    std::string profile = GetProfiles().second;
+
+    ChangeControllerProfileAlt(profile);
+    was_in_alternate = false;
+  }
+}
+
 std::stringstream ss;
 void DevInfo(const char* name, const char* format, ...)
 {
@@ -291,8 +313,7 @@ static AspectMode get_aspect_mode() {
 static void handle_wiimote_IR(u32 x_address, u32 y_address, Region region, float half_width, float half_height, AspectMode mode, float aspect_step) {
   constexpr float kInternalWidth = 640.f;
   const float cur_width = g_renderer->GetBackbufferWidth();
-  const float cur_height = g_renderer->GetBackbufferHeight();
-  const float render_aspect = cur_width / cur_height;
+  const float cur_height = g_renderer->GetBackbufferHeight(); 
   float unstretched_w = kMetroidAr > (cur_width / cur_height) ? cur_width : cur_height * kMetroidAr;
   if (region == Region::PAL) {
     unstretched_w *= kPalStretchMultiplier;

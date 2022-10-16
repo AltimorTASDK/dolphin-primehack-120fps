@@ -36,6 +36,8 @@ add_library(core
   Config/SYSCONFSettings.h
   Config/UISettings.cpp
   Config/UISettings.h
+  Config/WiimoteSettings.cpp
+  Config/WiimoteSettings.h
   ConfigLoaders/BaseConfigLoader.cpp
   ConfigLoaders/BaseConfigLoader.h
   ConfigLoaders/GameConfigLoader.cpp
@@ -103,16 +105,10 @@ add_library(core
   DSP/LabelMap.h
   DSPEmulator.cpp
   DSPEmulator.h
-  FifoPlayer/FifoAnalyzer.cpp
-  FifoPlayer/FifoAnalyzer.h
   FifoPlayer/FifoDataFile.cpp
   FifoPlayer/FifoDataFile.h
-  FifoPlayer/FifoPlaybackAnalyzer.cpp
-  FifoPlayer/FifoPlaybackAnalyzer.h
   FifoPlayer/FifoPlayer.cpp
   FifoPlayer/FifoPlayer.h
-  FifoPlayer/FifoRecordAnalyzer.cpp
-  FifoPlayer/FifoRecordAnalyzer.h
   FifoPlayer/FifoRecorder.cpp
   FifoPlayer/FifoRecorder.h
   FreeLookConfig.cpp
@@ -146,6 +142,10 @@ add_library(core
   HW/DSPHLE/DSPHLE.h
   HW/DSPHLE/MailHandler.cpp
   HW/DSPHLE/MailHandler.h
+  HW/DSPHLE/UCodes/ASnd.cpp
+  HW/DSPHLE/UCodes/ASnd.h
+  HW/DSPHLE/UCodes/AESnd.cpp
+  HW/DSPHLE/UCodes/AESnd.h
   HW/DSPHLE/UCodes/AX.cpp
   HW/DSPHLE/UCodes/AX.h
   HW/DSPHLE/UCodes/AXStructs.h
@@ -224,6 +224,14 @@ add_library(core
   HW/GCPadEmu.h
   HW/GPFifo.cpp
   HW/GPFifo.h
+  HW/HSP/HSP.cpp
+  HW/HSP/HSP.h
+  HW/HSP/HSP_Device.cpp
+  HW/HSP/HSP_Device.h
+  HW/HSP/HSP_DeviceARAMExpansion.cpp
+  HW/HSP/HSP_DeviceARAMExpansion.h
+  HW/HSP/HSP_DeviceNull.cpp
+  HW/HSP/HSP_DeviceNull.h
   HW/HW.cpp
   HW/HW.h
   HW/Memmap.cpp
@@ -492,24 +500,29 @@ add_library(core
   PrimeHack/PrimeUtils.h
   PrimeHack/PrimeMod.cpp
   PrimeHack/Mods/AutoEFB.cpp
-	PrimeHack/Mods/BloomIntensityMP3.cpp
+  PrimeHack/Mods/BloomIntensityMP3.cpp
   PrimeHack/Mods/CutBeamFxMP1.cpp
   PrimeHack/Mods/DisableBloom.h
   PrimeHack/Mods/FpsControls.cpp
   PrimeHack/Mods/Invulnerability.h
+  PrimeHack/Mods/MapController.cpp
+  PrimeHack/Mods/Motd.h
+  PrimeHack/Mods/Motd.cpp
   PrimeHack/Mods/Noclip.cpp
   PrimeHack/Mods/SkipCutscene.h
   PrimeHack/Mods/SpringballButton.cpp
   PrimeHack/Mods/ViewModifier.cpp
   PrimeHack/Mods/ContextSensitiveControls.cpp
-	PrimeHack/Mods/PortalSkipMP2.cpp
-	PrimeHack/Mods/FriendVouchers.h
-	PrimeHack/Mods/DisableHudMemoPopup.cpp
-	PrimeHack/Mods/ElfModLoader.cpp
+  PrimeHack/Mods/PortalSkipMP2.cpp
+  PrimeHack/Mods/FriendVouchers.h
+  PrimeHack/Mods/DisableHudMemoPopup.cpp
+  PrimeHack/Mods/ElfModLoader.cpp
+  PrimeHack/Mods/STRGPatch.cpp
   PrimeHack/EmuVariableManager.cpp
   PrimeHack/HackConfig.cpp
   PrimeHack/HackManager.cpp
   PrimeHack/Transform.cpp
+  PrimeHack/Quaternion.cpp
   PrimeHack/AddressDB.cpp
   PrimeHack/AddressDBInit.cpp
 )
@@ -625,6 +638,7 @@ if (APPLE)
     ${CORESERV_LIBRARY}
     ${IOB_LIBRARY}
     ${IOK_LIBRARY}
+    resolv
   )
 elseif (ANDROID)
   target_link_libraries(core
@@ -648,6 +662,10 @@ if(ENABLE_VULKAN)
   target_link_libraries(core PUBLIC videovulkan)
 endif()
 
+if(APPLE)
+  target_link_libraries(core PUBLIC videometal)
+endif()
+
 if(USE_MGBA)
   target_sources(core PRIVATE
     HW/GBACore.cpp
@@ -664,6 +682,8 @@ if(WIN32)
     HW/EXI/BBA/TAP_Win32.cpp
     HW/EXI/BBA/TAP_Win32.h
     HW/EXI/BBA/XLINK_KAI_BBA.cpp
+    HW/EXI/BBA/BuiltIn.cpp
+    HW/EXI/BBA/BuiltIn.h
     HW/WiimoteReal/IOWin.cpp
     HW/WiimoteReal/IOWin.h
   )
@@ -679,12 +699,16 @@ elseif(APPLE)
     HW/EXI/BBA/TAP_Apple.cpp
     HW/EXI/BBA/TAPServer_Apple.cpp
     HW/EXI/BBA/XLINK_KAI_BBA.cpp
+    HW/EXI/BBA/BuiltIn.cpp
+    HW/EXI/BBA/BuiltIn.h
   )
   target_link_libraries(core PUBLIC ${IOB_LIBRARY})
 elseif(UNIX)
   target_sources(core PRIVATE
     HW/EXI/BBA/TAP_Unix.cpp
     HW/EXI/BBA/XLINK_KAI_BBA.cpp
+    HW/EXI/BBA/BuiltIn.cpp
+    HW/EXI/BBA/BuiltIn.h
   )
   if(ANDROID)
     target_sources(core PRIVATE
@@ -729,4 +753,9 @@ if(UNIX)
     MemoryWatcher.cpp
     MemoryWatcher.h
   )
+endif()
+
+if(MSVC)
+  # Add precompiled header
+  target_link_libraries(core PRIVATE use_pch)
 endif()

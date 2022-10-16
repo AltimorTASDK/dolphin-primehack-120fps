@@ -132,16 +132,16 @@ static VkPipelineDepthStencilStateCreateInfo GetVulkanDepthStencilState(const De
   };
 }
 
-static VkPipelineColorBlendAttachmentState GetVulkanAttachmentBlendState(const BlendingState& state)
+static VkPipelineColorBlendAttachmentState
+GetVulkanAttachmentBlendState(const BlendingState& state, AbstractPipelineUsage usage)
 {
   VkPipelineColorBlendAttachmentState vk_state = {};
+
+  bool use_dual_source = state.usedualsrc;
+
   vk_state.blendEnable = static_cast<VkBool32>(state.blendenable);
   vk_state.colorBlendOp = state.subtract ? VK_BLEND_OP_REVERSE_SUBTRACT : VK_BLEND_OP_ADD;
   vk_state.alphaBlendOp = state.subtractAlpha ? VK_BLEND_OP_REVERSE_SUBTRACT : VK_BLEND_OP_ADD;
-
-  bool use_dual_source =
-      state.usedualsrc && g_ActiveConfig.backend_info.bSupportsDualSourceBlend &&
-      (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_DUAL_SOURCE_BLENDING) || state.dstalpha);
 
   if (use_dual_source)
   {
@@ -251,6 +251,9 @@ std::unique_ptr<VKPipeline> VKPipeline::Create(const AbstractPipelineConfig& con
   case AbstractPipelineUsage::GX:
     pipeline_layout = g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_STANDARD);
     break;
+  case AbstractPipelineUsage::GXUber:
+    pipeline_layout = g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_UBER);
+    break;
   case AbstractPipelineUsage::Utility:
     pipeline_layout = g_object_cache->GetPipelineLayout(PIPELINE_LAYOUT_UTILITY);
     break;
@@ -338,7 +341,7 @@ std::unique_ptr<VKPipeline> VKPipeline::Create(const AbstractPipelineConfig& con
   VkPipelineDepthStencilStateCreateInfo depth_stencil_state =
       GetVulkanDepthStencilState(config.depth_state);
   VkPipelineColorBlendAttachmentState blend_attachment_state =
-      GetVulkanAttachmentBlendState(config.blending_state);
+      GetVulkanAttachmentBlendState(config.blending_state, config.usage);
   VkPipelineColorBlendStateCreateInfo blend_state =
       GetVulkanColorBlendState(config.blending_state, &blend_attachment_state, 1);
 

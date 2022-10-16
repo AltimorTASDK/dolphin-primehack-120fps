@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project>
   <Import Project="..\VSProps\Base.Macros.props" />
   <Import Project="$(VSPropsDir)Base.Targets.props" />
   <PropertyGroup Label="Globals">
@@ -12,6 +12,7 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="$(VSPropsDir)Base.props" />
+    <Import Project="$(VSPropsDir)Base.Dolphin.props" />
     <Import Project="$(VSPropsDir)PCHUse.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
@@ -22,13 +23,6 @@
       <LanguageStandard Condition="'$(Configuration)|$(Platform)'=='Release|x64'">stdcpplatest</LanguageStandard>
     </ClCompile>
     <Link>
-      <!--
-        The following libs are needed since we pull in pretty much the entire
-        dolphin codebase.
-        -->
-      <AdditionalDependencies>avrt.lib;iphlpapi.lib;winmm.lib;setupapi.lib;rpcrt4.lib;comctl32.lib;Shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalDependencies Condition="'$(Platform)'=='x64'">opengl32.lib;avcodec.lib;avformat.lib;avutil.lib;swresample.lib;swscale.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories Condition="'$(Platform)'=='x64'">$(ExternalsDir)ffmpeg\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SubSystem>Console</SubSystem>
     </Link>
   </ItemDefinitionGroup>
@@ -36,6 +30,7 @@
     <ClInclude Include="Core\DSP\DSPTestBinary.h" />
     <ClInclude Include="Core\DSP\DSPTestText.h" />
     <ClInclude Include="Core\DSP\HermesBinary.h" />
+    <ClInclude Include="Core\DSP\HermesText.h" />
     <ClInclude Include="Core\IOS\ES\TestBinaryData.h" />
     <ClInclude Include="Core\PowerPC\TestValues.h" />
   </ItemGroup>
@@ -51,6 +46,7 @@
     <ClCompile Include="Common\BusyLoopTest.cpp" />
     <ClCompile Include="Common\CommonFuncsTest.cpp" />
     <ClCompile Include="Common\Crypto\EcTest.cpp" />
+    <ClCompile Include="Common\Crypto\SHA1Test.cpp" />
     <ClCompile Include="Common\EnumFormatterTest.cpp" />
     <ClCompile Include="Common\EventTest.cpp" />
     <ClCompile Include="Common\FileUtilTest.cpp" />
@@ -68,6 +64,7 @@
     <ClCompile Include="Core\DSP\DSPTestBinary.cpp" />
     <ClCompile Include="Core\DSP\DSPTestText.cpp" />
     <ClCompile Include="Core\DSP\HermesBinary.cpp" />
+    <ClCompile Include="Core\DSP\HermesText.cpp" />
     <ClCompile Include="Core\IOS\ES\FormatsTest.cpp" />
     <ClCompile Include="Core\IOS\FS\FileSystemTest.cpp" />
     <ClCompile Include="Core\MMIOTest.cpp" />
@@ -100,7 +97,8 @@
       <Project>{0e033be3-2e08-428e-9ae9-bc673efa12b5}</Project>
     </ProjectReference>
   </ItemGroup>
-  <Import Project="$(ExternalsDir)ExternalsReferenceAll.props" />
+  <Import Project="$(ExternalsDir)Bochs_disasm\exports.props" />
+  <Import Project="$(ExternalsDir)fmt\exports.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

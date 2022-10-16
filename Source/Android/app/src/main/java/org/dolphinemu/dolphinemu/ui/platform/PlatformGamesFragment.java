@@ -3,7 +3,6 @@
 package org.dolphinemu.dolphinemu.ui.platform;
 
 import android.os.Bundle;
-import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -15,9 +14,11 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
+import com.google.android.material.color.MaterialColors;
+
 import org.dolphinemu.dolphinemu.R;
 import org.dolphinemu.dolphinemu.adapters.GameAdapter;
-import org.dolphinemu.dolphinemu.services.GameFileCacheService;
+import org.dolphinemu.dolphinemu.services.GameFileCacheManager;
 
 public final class PlatformGamesFragment extends Fragment implements PlatformGamesView
 {
@@ -62,9 +63,11 @@ public final class PlatformGamesFragment extends Fragment implements PlatformGam
     RecyclerView.LayoutManager layoutManager = new GridLayoutManager(getActivity(), columns);
     mAdapter = new GameAdapter();
 
-    TypedValue typedValue = new TypedValue();
-    requireActivity().getTheme().resolveAttribute(R.attr.colorPrimary, typedValue, true);
-    mSwipeRefresh.setColorSchemeColors(typedValue.data);
+    // Set theme color to the refresh animation's background
+    mSwipeRefresh.setProgressBackgroundColorSchemeColor(
+            MaterialColors.getColor(mSwipeRefresh, R.attr.colorPrimary));
+    mSwipeRefresh.setColorSchemeColors(
+            MaterialColors.getColor(mSwipeRefresh, R.attr.colorOnPrimary));
 
     mSwipeRefresh.setOnRefreshListener(mOnRefreshListener);
 
@@ -73,7 +76,7 @@ public final class PlatformGamesFragment extends Fragment implements PlatformGam
 
     mRecyclerView.addItemDecoration(new GameAdapter.SpacesItemDecoration(8));
 
-    setRefreshing(GameFileCacheService.isLoading());
+    setRefreshing(GameFileCacheManager.isLoadingOrRescanning());
 
     showGames();
   }
@@ -96,7 +99,7 @@ public final class PlatformGamesFragment extends Fragment implements PlatformGam
     if (mAdapter != null)
     {
       Platform platform = (Platform) getArguments().getSerializable(ARG_PLATFORM);
-      mAdapter.swapDataSet(GameFileCacheService.getGameFilesForPlatform(platform));
+      mAdapter.swapDataSet(GameFileCacheManager.getGameFilesForPlatform(platform));
     }
   }
 

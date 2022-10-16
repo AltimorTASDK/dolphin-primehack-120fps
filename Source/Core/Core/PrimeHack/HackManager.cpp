@@ -96,8 +96,27 @@ void HackManager::run_active_mods() {
   default:
     u32 region_code = PowerPC::HostRead_U32(0x80000000);
     if (region_code == FOURCC('G', 'M', '8', 'E')) {
-      active_game = Game::PRIME_1_GCN;
       active_region = Region::NTSC_U;
+
+      const u8 version = read8(0x80000007);
+      switch (version) {
+        case 0:
+          active_game = Game::PRIME_1_GCN;
+          break;
+
+        case 1:
+          active_game = Game::PRIME_1_GCN_R1;
+          break;
+
+        case 2:
+          active_game = Game::PRIME_1_GCN_R2;
+          break;
+
+        default:
+          active_game = Game::INVALID_GAME;
+          active_region = Region::INVALID_REGION;
+          break;
+      }
     }
     else if (region_code == FOURCC('G', 'M', '8', 'P')) {
       active_game = Game::PRIME_1_GCN;
@@ -172,20 +191,18 @@ void HackManager::run_active_mods() {
 }
 
 void HackManager::update_mod_states() {
-  auto& settings = SConfig::GetInstance();
-
   set_mod_enabled("auto_efb", UseMPAutoEFB());
   set_mod_enabled("cut_beam_fx_mp1", GetEnableSecondaryGunFX());
 
   if (Config::Get(Config::MAIN_ENABLE_CHEATS)) {
-    set_mod_enabled("noclip", GetNoclip());
-    set_mod_enabled("invulnerability", GetInvulnerability());
-    set_mod_enabled("skip_cutscene", GetSkipCutscene());
-    set_mod_enabled("restore_dashing", GetRestoreDashing());
-    set_mod_enabled("friend_vouchers_cheat", settings.bPrimeFriendVouchers);
-    set_mod_enabled("portal_skip_mp2", settings.bPrimePortalSkip);
-    set_mod_enabled("disable_hudmemo_popup", settings.bDisableHudMemoPopup);
-    set_mod_enabled("unlock_hypermode", settings.bPrimeUnlockHypermode);
+    set_mod_enabled("noclip", Config::Get(Config::PRIMEHACK_NOCLIP));
+    set_mod_enabled("invulnerability", Config::Get(Config::PRIMEHACK_INVULNERABILITY));
+    set_mod_enabled("skip_cutscene", Config::Get(Config::PRIMEHACK_SKIPPABLE_CUTSCENES));
+    set_mod_enabled("restore_dashing", Config::Get(Config::PRIMEHACK_RESTORE_SCANDASH));
+    set_mod_enabled("friend_vouchers_cheat", Config::Get(Config::PRIMEHACK_FRIENDVOUCHERS));
+    set_mod_enabled("portal_skip_mp2", Config::Get(Config::PRIMEHACK_SKIPMP2_PORTAL));
+    set_mod_enabled("disable_hudmemo_popup", Config::Get(Config::PRIMEHACK_DISABLE_HUDMEMO));
+    set_mod_enabled("unlock_hypermode", Config::Get(Config::PRIMEHACK_UNLOCK_HYPERMODE));
   }
   else {
     disable_mod("noclip");
@@ -198,10 +215,12 @@ void HackManager::update_mod_states() {
   }
 
   // Disallow any PrimeHack control mods
-  if (!settings.bEnablePrimeHack) {
+  if (!Config::Get(Config::PRIMEHACK_ENABLE) || UsingRealWiimote())
+  {
     disable_mod("fps_controls");
     disable_mod("springball_button");
     disable_mod("context_sensitive_controls");
+    disable_mod("map_controller");
 
     return;
   } else {
@@ -216,6 +235,11 @@ void HackManager::update_mod_states() {
         return;
       }
       result->second->set_state(ModState::CODE_DISABLED);
+    }
+    if (NewMapControlsEnabled()) {
+      enable_mod("map_controller");
+    } else {
+      disable_mod("map_controller");
     }
   }
 }

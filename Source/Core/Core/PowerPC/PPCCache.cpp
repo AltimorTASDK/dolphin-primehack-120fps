@@ -7,7 +7,7 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/Swap.h"
-#include "Core/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/DolphinAnalytics.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/JitInterface.h"
@@ -87,6 +87,12 @@ constexpr std::array<u32, 128> s_way_from_plru = [] {
 }();
 }  // Anonymous namespace
 
+InstructionCache::~InstructionCache()
+{
+  if (m_config_callback_id)
+    Config::RemoveConfigChangedCallback(*m_config_callback_id);
+}
+
 void InstructionCache::Reset()
 {
   valid.fill(0);
@@ -99,6 +105,10 @@ void InstructionCache::Reset()
 
 void InstructionCache::Init()
 {
+  if (!m_config_callback_id)
+    m_config_callback_id = Config::AddConfigChangedCallback([this] { RefreshConfig(); });
+  RefreshConfig();
+
   data.fill({});
   tags.fill({});
   Reset();
@@ -106,7 +116,7 @@ void InstructionCache::Init()
 
 void InstructionCache::Invalidate(u32 addr)
 {
-  if (!HID0.ICE || SConfig::GetInstance().bDisableICache)
+  if (!HID0.ICE || m_disable_icache)
     return;
 
   // Invalidates the whole set
@@ -129,7 +139,7 @@ void InstructionCache::Invalidate(u32 addr)
 
 u32 InstructionCache::ReadInstruction(u32 addr)
 {
-  if (!HID0.ICE || SConfig::GetInstance().bDisableICache)  // instruction cache is disabled
+  if (!HID0.ICE || m_disable_icache)  // instruction cache is disabled
     return Memory::Read_U32(addr);
   u32 set = (addr >> 5) & 0x7f;
   u32 tag = addr >> 12;
@@ -194,12 +204,57 @@ u32 InstructionCache::ReadInstruction(u32 addr)
 
 void InstructionCache::DoState(PointerWrap& p)
 {
+  if (p.IsReadMode())
+  {
+    // Clear valid parts of the lookup tables (this is done instead of using fill(0xff) to avoid
+    // loading the entire 4MB of tables into cache)
+    for (u32 set = 0; set < ICACHE_SETS; set++)
+    {
+      for (u32 way = 0; way < ICACHE_WAYS; way++)
+      {
+        if ((valid[set] & (1 << way)) != 0)
+        {
+          const u32 addr = (tags[set][way] << 12) | (set << 5);
+          if (addr & ICACHE_VMEM_BIT)
+            lookup_table_vmem[(addr >> 5) & 0xfffff] = 0xff;
+          else if (addr & ICACHE_EXRAM_BIT)
+            lookup_table_ex[(addr >> 5) & 0x1fffff] = 0xff;
+          else
+            lookup_table[(addr >> 5) & 0xfffff] = 0xff;
+        }
+      }
+    }
+  }
+
   p.DoArray(data);
   p.DoArray(tags);
   p.DoArray(plru);
   p.DoArray(valid);
-  p.DoArray(lookup_table);
-  p.DoArray(lookup_table_ex);
-  p.DoArray(lookup_table_vmem);
+
+  if (p.IsReadMode())
+  {
+    // Recompute lookup tables
+    for (u32 set = 0; set < ICACHE_SETS; set++)
+    {
+      for (u32 way = 0; way < ICACHE_WAYS; way++)
+      {
+        if ((valid[set] & (1 << way)) != 0)
+        {
+          const u32 addr = (tags[set][way] << 12) | (set << 5);
+          if (addr & ICACHE_VMEM_BIT)
+            lookup_table_vmem[(addr >> 5) & 0xfffff] = way;
+          else if (addr & ICACHE_EXRAM_BIT)
+            lookup_table_ex[(addr >> 5) & 0x1fffff] = way;
+          else
+            lookup_table[(addr >> 5) & 0xfffff] = way;
+        }
+      }
+    }
+  }
+}
+
+void InstructionCache::RefreshConfig()
+{
+  m_disable_icache = Config::Get(Config::MAIN_DISABLE_ICACHE);
 }
 }  // namespace PowerPC

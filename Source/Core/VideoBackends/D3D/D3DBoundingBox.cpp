@@ -1,12 +1,15 @@
 // Copyright 2014 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "VideoBackends/D3D/D3DBoundingBox.h"
+
 #include <algorithm>
 #include <array>
 
+#include "Common/Assert.h"
 #include "Common/CommonTypes.h"
 #include "Common/MsgHandler.h"
-#include "VideoBackends/D3D/D3DBoundingBox.h"
+
 #include "VideoBackends/D3D/D3DState.h"
 #include "VideoBackends/D3DCommon/D3DCommon.h"
 
@@ -24,7 +27,8 @@ bool D3DBoundingBox::Initialize()
   // Create 2 buffers here.
   // First for unordered access on default pool.
   auto desc = CD3D11_BUFFER_DESC(NUM_BBOX_VALUES * sizeof(BBoxType), D3D11_BIND_UNORDERED_ACCESS,
-                                 D3D11_USAGE_DEFAULT, 0, 0, sizeof(BBoxType));
+                                 D3D11_USAGE_DEFAULT, 0, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS,
+                                 sizeof(BBoxType));
   const BBoxType initial_values[NUM_BBOX_VALUES] = {0, 0, 0, 0};
   D3D11_SUBRESOURCE_DATA data;
   data.pSysMem = initial_values;
@@ -32,7 +36,7 @@ bool D3DBoundingBox::Initialize()
   data.SysMemSlicePitch = 0;
   HRESULT hr;
   hr = D3D::device->CreateBuffer(&desc, &data, &m_buffer);
-  CHECK(SUCCEEDED(hr), "Create BoundingBox Buffer.");
+  ASSERT_MSG(VIDEO, SUCCEEDED(hr), "Failed to create BoundingBox Buffer: {}", DX11HRWrap(hr));
   if (FAILED(hr))
     return false;
   D3DCommon::SetDebugObjectName(m_buffer.Get(), "BoundingBox Buffer");
@@ -41,21 +45,23 @@ bool D3DBoundingBox::Initialize()
   desc.Usage = D3D11_USAGE_STAGING;
   desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
   desc.BindFlags = 0;
+  desc.MiscFlags = 0;
   hr = D3D::device->CreateBuffer(&desc, nullptr, &m_staging_buffer);
-  CHECK(SUCCEEDED(hr), "Create BoundingBox Staging Buffer.");
+  ASSERT_MSG(VIDEO, SUCCEEDED(hr), "Failed to create BoundingBox Staging Buffer: {}",
+             DX11HRWrap(hr));
   if (FAILED(hr))
     return false;
   D3DCommon::SetDebugObjectName(m_staging_buffer.Get(), "BoundingBox Staging Buffer");
 
   // UAV is required to allow concurrent access.
   D3D11_UNORDERED_ACCESS_VIEW_DESC UAVdesc = {};
-  UAVdesc.Format = DXGI_FORMAT_R32_SINT;
+  UAVdesc.Format = DXGI_FORMAT_R32_TYPELESS;
   UAVdesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
   UAVdesc.Buffer.FirstElement = 0;
-  UAVdesc.Buffer.Flags = 0;
+  UAVdesc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
   UAVdesc.Buffer.NumElements = NUM_BBOX_VALUES;
   hr = D3D::device->CreateUnorderedAccessView(m_buffer.Get(), &UAVdesc, &m_uav);
-  CHECK(SUCCEEDED(hr), "Create BoundingBox UAV.");
+  ASSERT_MSG(VIDEO, SUCCEEDED(hr), "Failed to create BoundingBox UAV: {}", DX11HRWrap(hr));
   if (FAILED(hr))
     return false;
   D3DCommon::SetDebugObjectName(m_uav.Get(), "BoundingBox UAV");

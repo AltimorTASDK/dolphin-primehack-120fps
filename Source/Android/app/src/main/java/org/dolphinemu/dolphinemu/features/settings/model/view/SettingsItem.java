@@ -4,7 +4,6 @@ package org.dolphinemu.dolphinemu.features.settings.model.view;
 
 import android.content.Context;
 
-import org.dolphinemu.dolphinemu.DolphinApplication;
 import org.dolphinemu.dolphinemu.NativeLibrary;
 import org.dolphinemu.dolphinemu.features.settings.model.AbstractSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.Settings;
@@ -28,6 +27,8 @@ public abstract class SettingsItem
   public static final int TYPE_SINGLE_CHOICE_DYNAMIC_DESCRIPTIONS = 8;
   public static final int TYPE_FILE_PICKER = 9;
   public static final int TYPE_RUN_RUNNABLE = 10;
+  public static final int TYPE_STRING = 11;
+  public static final int TYPE_HYPERLINK_HEADER = 12;
 
   private final CharSequence mName;
   private final CharSequence mDescription;

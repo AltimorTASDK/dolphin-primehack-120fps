@@ -57,9 +57,6 @@ namespace WiimoteCommon
 {
 class HIDWiimote;
 
-WiimoteSource GetSource(unsigned int index);
-void SetSource(unsigned int index, WiimoteSource source);
-
 // Used to reconnect WiimoteDevice instance to HID source.
 // Must be run from CPU thread.
 void UpdateSource(unsigned int index);
@@ -99,6 +96,7 @@ ControllerEmu::ControlGroup* GetDrawsomeTabletGroup(int number,
                                                     WiimoteEmu::DrawsomeTabletGroup group);
 ControllerEmu::ControlGroup* GetTaTaConGroup(int number, WiimoteEmu::TaTaConGroup group);
 
+WiimoteSource GetSource(unsigned int index);
 void ChangeUIPrimeHack(int number, bool useMetroidUI);
 
 bool CheckVisor(int visor_count);
@@ -124,7 +122,7 @@ bool CheckPitchRecentre();
 std::tuple<double, double> GetPrimeStickXY();
 std::tuple<bool, bool> GetBVMenuOptions();
 
-std::tuple<double, double, bool, bool, bool, bool> PrimeSettings();
+std::tuple<double, double, bool, bool, bool, bool, bool> PrimeSettings();
 
 
 bool NetPlay_GetButtonPress(int wiimote, bool pressed);
@@ -138,7 +136,5 @@ void Shutdown();
 void Resume();
 void Pause();
 void Refresh();
-
-void LoadSettings();
 
 }  // namespace WiimoteReal

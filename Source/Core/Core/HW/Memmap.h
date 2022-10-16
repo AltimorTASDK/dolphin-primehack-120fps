@@ -21,16 +21,18 @@ class Mapping;
 namespace Memory
 {
 // Base is a pointer to the base of the memory map. Yes, some MMU tricks
-// are used to set up a full GC or Wii memory map in process memory.  on
-// 32-bit, you have to mask your offsets with 0x3FFFFFFF. This means that
-// some things are mirrored too many times, but eh... it works.
-
+// are used to set up a full GC or Wii memory map in process memory.
 // In 64-bit, this might point to "high memory" (above the 32-bit limit),
 // so be sure to load it into a 64-bit register.
 extern u8* physical_base;
 extern u8* logical_base;
 
-// These are guaranteed to point to "low memory" addresses (sub-32-bit).
+// This page table is used for a "soft MMU" implementation when
+// setting up the full memory map in process memory isn't possible.
+extern u8* physical_page_mappings_base;
+extern u8* logical_page_mappings_base;
+
+// The actual memory used for backing the memory map.
 extern u8* m_pRAM;
 extern u8* m_pEXRAM;
 extern u8* m_pL1Cache;
@@ -74,6 +76,7 @@ void Clear();
 // emulated hardware outside the CPU. Use "Device_" prefix.
 std::string GetString(u32 em_address, size_t size = 0);
 u8* GetPointer(u32 address);
+u8* GetPointerForRange(u32 address, size_t size);
 void CopyFromEmu(void* data, u32 address, size_t size);
 void CopyToEmu(u32 address, const void* data, size_t size);
 void Memset(u32 address, u8 value, size_t size);
@@ -92,7 +95,7 @@ void Write_U64_Swap(u64 var, u32 address);
 template <typename T>
 void CopyFromEmuSwapped(T* data, u32 address, size_t size)
 {
-  const T* src = reinterpret_cast<T*>(GetPointer(address));
+  const T* src = reinterpret_cast<T*>(GetPointerForRange(address, size));
 
   if (src == nullptr)
     return;
@@ -104,7 +107,7 @@ void CopyFromEmuSwapped(T* data, u32 address, size_t size)
 template <typename T>
 void CopyToEmuSwapped(u32 address, const T* data, size_t size)
 {
-  T* dest = reinterpret_cast<T*>(GetPointer(address));
+  T* dest = reinterpret_cast<T*>(GetPointerForRange(address, size));
 
   if (dest == nullptr)
     return;

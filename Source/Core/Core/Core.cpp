@@ -20,11 +20,13 @@
 
 #include "AudioCommon/AudioCommon.h"
 
+#include "Common/Assert.h"
 #include "Common/CPUDetect.h"
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
 #include "Common/Event.h"
 #include "Common/FPURoundMode.h"
+#include "Common/FatFsUtil.h"
 #include "Common/FileUtil.h"
 #include "Common/Flag.h"
 #include "Common/Logging/Log.h"
@@ -67,6 +69,7 @@
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/State.h"
+#include "Core/System.h"
 #include "Core/WiiRoot.h"
 
 #ifdef USE_MEMORYWATCHER
@@ -96,6 +99,7 @@ static bool s_wants_determinism;
 
 // Declarations and definitions
 static Common::Timer s_timer;
+static u64 s_timer_offset;
 static std::atomic<u32> s_drawn_frame;
 static std::atomic<u32> s_drawn_video;
 
@@ -126,6 +130,7 @@ static std::queue<HostJob> s_host_jobs_queue;
 static Common::Event s_cpu_thread_job_finished;
 
 static thread_local bool tls_is_cpu_thread = false;
+static thread_local bool tls_is_gpu_thread = false;
 
 static void EmuThread(std::unique_ptr<BootParameters> boot, WindowSystemInfo wsi);
 
@@ -202,15 +207,7 @@ bool IsCPUThread()
 
 bool IsGPUThread()
 {
-  const SConfig& _CoreParameter = SConfig::GetInstance();
-  if (_CoreParameter.bCPUThread)
-  {
-    return (s_emu_thread.joinable() && (s_emu_thread.get_id() == std::this_thread::get_id()));
-  }
-  else
-  {
-    return IsCPUThread();
-  }
+  return tls_is_gpu_thread;
 }
 
 bool WantsDeterminism()
@@ -238,7 +235,8 @@ bool Init(std::unique_ptr<BootParameters> boot, const WindowSystemInfo& wsi)
   HostDispatchJobs();
 
   INFO_LOG_FMT(BOOT, "Starting core = {} mode", SConfig::GetInstance().bWii ? "Wii" : "GameCube");
-  INFO_LOG_FMT(BOOT, "CPU Thread separate = {}", SConfig::GetInstance().bCPUThread ? "Yes" : "No");
+  INFO_LOG_FMT(BOOT, "CPU Thread separate = {}",
+               Core::System::GetInstance().IsDualCoreMode() ? "Yes" : "No");
 
   Host_UpdateMainFrame();  // Disable any menus or buttons at boot
 
@@ -272,11 +270,7 @@ void Stop()  // - Hammertime!
   if (GetState() == State::Stopping || GetState() == State::Uninitialized)
     return;
 
-  const SConfig& _CoreParameter = SConfig::GetInstance();
-
   s_is_stopping = true;
-
-  s_timer.Stop();
 
   CallOnStateChangedCallbacks(State::Stopping);
 
@@ -291,7 +285,7 @@ void Stop()  // - Hammertime!
   INFO_LOG_FMT(CONSOLE, "{}", StopMessage(true, "Stop CPU"));
   CPU::Stop();
 
-  if (_CoreParameter.bCPUThread)
+  if (Core::System::GetInstance().IsDualCoreMode())
   {
     // Video_EnterLoop() should now exit so that EmuThread()
     // will continue concurrently with the rest of the commands
@@ -314,6 +308,16 @@ void UndeclareAsCPUThread()
   tls_is_cpu_thread = false;
 }
 
+void DeclareAsGPUThread()
+{
+  tls_is_gpu_thread = true;
+}
+
+void UndeclareAsGPUThread()
+{
+  tls_is_gpu_thread = false;
+}
+
 // For the CPU Thread only.
 static void CPUSetInitialExecutionState(bool force_paused = false)
 {
@@ -333,8 +337,7 @@ static void CpuThread(const std::optional<std::string>& savestate_path, bool del
 {
   DeclareAsCPUThread();
 
-  const SConfig& _CoreParameter = SConfig::GetInstance();
-  if (_CoreParameter.bCPUThread)
+  if (Core::System::GetInstance().IsDualCoreMode())
     Common::SetCurrentThreadName("CPU thread");
   else
     Common::SetCurrentThreadName("CPU-GPU thread");
@@ -348,7 +351,8 @@ static void CpuThread(const std::optional<std::string>& savestate_path, bool del
   static_cast<void>(IDCache::GetEnvForThread());
 #endif
 
-  if (_CoreParameter.bFastmem)
+  const bool fastmem_enabled = Config::Get(Config::MAIN_FASTMEM);
+  if (fastmem_enabled)
     EMM::InstallExceptionHandler();  // Let's run under memory watch
 
 #ifdef USE_MEMORYWATCHER
@@ -363,22 +367,28 @@ static void CpuThread(const std::optional<std::string>& savestate_path, bool del
   }
 
   s_is_started = true;
+  {
 #ifndef _WIN32
-  if (!_CoreParameter.gdb_socket.empty())
-  {
-    GDBStub::InitLocal(_CoreParameter.gdb_socket.data());
-    CPUSetInitialExecutionState(true);
-  }
-  else
+    std::string gdb_socket = Config::Get(Config::MAIN_GDB_SOCKET);
+    if (!gdb_socket.empty())
+    {
+      GDBStub::InitLocal(gdb_socket.data());
+      CPUSetInitialExecutionState(true);
+    }
+    else
 #endif
-      if (_CoreParameter.iGDBPort > 0)
-  {
-    GDBStub::Init(_CoreParameter.iGDBPort);
-    CPUSetInitialExecutionState(true);
-  }
-  else
-  {
-    CPUSetInitialExecutionState();
+    {
+      int gdb_port = Config::Get(Config::MAIN_GDB_PORT);
+      if (gdb_port > 0)
+      {
+        GDBStub::Init(gdb_port);
+        CPUSetInitialExecutionState(true);
+      }
+      else
+      {
+        CPUSetInitialExecutionState();
+      }
+    }
   }
 
   // Enter CPU run loop. When we leave it - we are done.
@@ -390,7 +400,7 @@ static void CpuThread(const std::optional<std::string>& savestate_path, bool del
 
   s_is_started = false;
 
-  if (_CoreParameter.bFastmem)
+  if (fastmem_enabled)
     EMM::UninstallExceptionHandler();
 
   if (GDBStub::IsActive())
@@ -406,8 +416,7 @@ static void FifoPlayerThread(const std::optional<std::string>& savestate_path,
 {
   DeclareAsCPUThread();
 
-  const SConfig& _CoreParameter = SConfig::GetInstance();
-  if (_CoreParameter.bCPUThread)
+  if (Core::System::GetInstance().IsDualCoreMode())
     Common::SetCurrentThreadName("FIFO player thread");
   else
     Common::SetCurrentThreadName("FIFO-GPU thread");
@@ -439,6 +448,7 @@ static void FifoPlayerThread(const std::optional<std::string>& savestate_path,
 // See the BootManager.cpp file description for a complete call schedule.
 static void EmuThread(std::unique_ptr<BootParameters> boot, WindowSystemInfo wsi)
 {
+  const Core::System& system = Core::System::GetInstance();
   const SConfig& core_parameter = SConfig::GetInstance();
   CallOnStateChangedCallbacks(State::Starting);
   Common::ScopeGuard flag_guard{[] {
@@ -454,81 +464,46 @@ static void EmuThread(std::unique_ptr<BootParameters> boot, WindowSystemInfo wsi
 
   Common::SetCurrentThreadName("Emuthread - Starting");
 
+  DeclareAsGPUThread();
+
   // For a time this acts as the CPU thread...
   DeclareAsCPUThread();
   s_frame_step = false;
 
-  // The frontend will likely have initialized the controller interface, as it needs
-  // it to provide the configuration dialogs. In this case, instead of re-initializing
-  // entirely, we switch the window used for inputs to the render window. This way, the
-  // cursor position is relative to the render window, instead of the main window.
-  bool init_controllers = false;
-  if (!g_controller_interface.IsInit())
-  {
-    g_controller_interface.Initialize(wsi);
-    Pad::Initialize();
-    Pad::InitializeGBA();
-    Keyboard::Initialize();
-    init_controllers = true;
-  }
-  else
-  {
-    g_controller_interface.ChangeWindow(wsi.render_window);
-    Pad::LoadConfig();
-    Pad::LoadGBAConfig();
-    Keyboard::LoadConfig();
-  }
+  // Switch the window used for inputs to the render window. This way, the cursor position
+  // is relative to the render window, instead of the main window.
+  ASSERT(g_controller_interface.IsInit());
+  g_controller_interface.ChangeWindow(wsi.render_window);
 
-  const std::optional<std::string> savestate_path = boot->savestate_path;
-  const bool delete_savestate = boot->delete_savestate;
+  Pad::LoadConfig();
+  Pad::LoadGBAConfig();
+  Keyboard::LoadConfig();
 
-  // Load and Init Wiimotes - only if we are booting in Wii mode
-  bool init_wiimotes = false;
-  if (core_parameter.bWii && !SConfig::GetInstance().m_bt_passthrough_enabled)
+  BootSessionData boot_session_data = std::move(boot->boot_session_data);
+  const std::optional<std::string>& savestate_path = boot_session_data.GetSavestatePath();
+  const bool delete_savestate =
+      boot_session_data.GetDeleteSavestate() == DeleteSavestateAfterBoot::Yes;
+
+  bool sync_sd_folder = core_parameter.bWii && Config::Get(Config::MAIN_WII_SD_CARD) &&
+                        Config::Get(Config::MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC);
+  if (sync_sd_folder)
+    sync_sd_folder = Common::SyncSDFolderToSDImage(Core::WantsDeterminism());
+
+  Common::ScopeGuard sd_folder_sync_guard{[sync_sd_folder] {
+    if (sync_sd_folder && Config::Get(Config::MAIN_ALLOW_SD_WRITES))
+      Common::SyncSDImageToSDFolder();
+  }};
+
+  // Load Wiimotes - only if we are booting in Wii mode
+  if (core_parameter.bWii && !Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_ENABLED))
   {
-    if (init_controllers)
-    {
-      Wiimote::Initialize(savestate_path ? Wiimote::InitializeMode::DO_WAIT_FOR_WIIMOTES :
-                                           Wiimote::InitializeMode::DO_NOT_WAIT_FOR_WIIMOTES);
-      init_wiimotes = true;
-    }
-    else
-    {
-      Wiimote::LoadConfig();
-    }
+    Wiimote::LoadConfig();
 
     if (NetPlay::IsNetPlayRunning())
       NetPlay::SetupWiimotes();
   }
 
-  if (init_controllers)
-  {
-    FreeLook::Initialize();
-  }
-  else
-  {
-    FreeLook::LoadInputConfig();
-  }
-
-  Common::ScopeGuard controller_guard{[init_controllers, init_wiimotes] {
-    if (!init_controllers)
-      return;
-
-    if (init_wiimotes)
-    {
-      Wiimote::ResetAllWiimotes();
-      Wiimote::Shutdown();
-    }
-
-    FreeLook::Shutdown();
-
-    ResetRumble();
-
-    Keyboard::Shutdown();
-    Pad::Shutdown();
-    Pad::ShutdownGBA();
-    g_controller_interface.Shutdown();
-  }};
+  FreeLook::LoadInputConfig();
 
   Movie::Init(*boot);
   Common::ScopeGuard movie_guard{&Movie::Shutdown};
@@ -536,7 +511,7 @@ static void EmuThread(std::unique_ptr<BootParameters> boot, WindowSystemInfo wsi
   AudioCommon::InitSoundStream();
   Common::ScopeGuard audio_guard{&AudioCommon::ShutdownSoundStream};
 
-  HW::Init();
+  HW::Init(NetPlay::IsNetPlayRunning() ? &(boot_session_data.GetNetplaySettings()->sram) : nullptr);
 
   Common::ScopeGuard hw_guard{[] {
     // We must set up this flag before executing HW::Shutdown()
@@ -615,18 +590,20 @@ static void EmuThread(std::unique_ptr<BootParameters> boot, WindowSystemInfo wsi
   // Initialise Wii filesystem contents.
   // This is done here after Boot and not in BootManager to ensure that we operate
   // with the correct title context since save copying requires title directories to exist.
-  Common::ScopeGuard wiifs_guard{&Core::CleanUpWiiFileSystemContents};
+  Common::ScopeGuard wiifs_guard{[&boot_session_data] {
+    Core::CleanUpWiiFileSystemContents(boot_session_data);
+    boot_session_data.InvokeWiiSyncCleanup();
+  }};
   if (SConfig::GetInstance().bWii)
-    Core::InitializeWiiFileSystemContents(savegame_redirect);
+    Core::InitializeWiiFileSystemContents(savegame_redirect, boot_session_data);
   else
     wiifs_guard.Dismiss();
 
   // This adds the SyncGPU handler to CoreTiming, so now CoreTiming::Advance might block.
   Fifo::Prepare();
 
-  // Setup our core, but can't use dynarec if we are compare server
-  if (core_parameter.cpu_core != PowerPC::CPUCore::Interpreter &&
-      (!core_parameter.bRunCompareServer || core_parameter.bRunCompareClient))
+  // Setup our core
+  if (Config::Get(Config::MAIN_CPU_CORE) != PowerPC::CPUCore::Interpreter)
   {
     PowerPC::SetMode(PowerPC::CoreMode::JIT);
   }
@@ -636,7 +613,7 @@ static void EmuThread(std::unique_ptr<BootParameters> boot, WindowSystemInfo wsi
   }
 
   // ENTER THE VIDEO THREAD LOOP
-  if (core_parameter.bCPUThread)
+  if (system.IsDualCoreMode())
   {
     // This thread, after creating the EmuWindow, spawns a CPU
     // thread, and then takes over and becomes the video thread
@@ -684,21 +661,18 @@ void SetState(State state)
     CPU::EnableStepping(true);  // Break
     Wiimote::Pause();
     ResetRumble();
-    s_timer.Update();
+    s_timer_offset = s_timer.ElapsedMs();
     break;
   case State::Running:
+  {
     CPU::EnableStepping(false);
     Wiimote::Resume();
-    if (!s_timer.IsRunning())
-    {
-      s_timer.Start();
-    }
-    else
-    {
-      // Add time difference from the last pause
-      s_timer.AddTimeDifference();
-    }
+    // Restart timer, accounting for time that had elapsed between previous s_timer.Start() and
+    // emulator pause
+    s_timer.StartWithOffset(s_timer_offset);
+    s_timer_offset = 0;
     break;
+  }
   default:
     PanicAlertFmt("Invalid state");
     break;
@@ -748,7 +722,7 @@ static std::string GenerateScreenshotName()
 
   const std::time_t cur_time = std::time(nullptr);
   const std::string base_name =
-      fmt::format("{}_{:%Y-%m-%d_%H-%M-%S}", path_prefix, *std::localtime(&cur_time));
+      fmt::format("{}_{:%Y-%m-%d_%H-%M-%S}", path_prefix, fmt::localtime(cur_time));
 
   // First try a filename without any suffixes, if already exists then append increasing numbers
   std::string name = fmt::format("{}.png", base_name);
@@ -870,12 +844,12 @@ void RunOnCPUThread(std::function<void()> function, bool wait_for_completion)
 void VideoThrottle()
 {
   // Update info per second
-  u32 ElapseTime = (u32)s_timer.GetTimeElapsed();
-  if ((ElapseTime >= 1000 && s_drawn_video.load() > 0) || s_frame_step)
+  u64 elapsed_ms = s_timer.ElapsedMs();
+  if ((elapsed_ms >= 1000 && s_drawn_video.load() > 0) || s_frame_step)
   {
     s_timer.Start();
 
-    UpdateTitle(ElapseTime);
+    UpdateTitle(elapsed_ms);
 
     s_drawn_frame.store(0);
     s_drawn_video.store(0);
@@ -917,22 +891,21 @@ void Callback_NewField()
   }
 }
 
-void UpdateTitle(u32 ElapseTime)
+void UpdateTitle(u64 elapsed_ms)
 {
-  SConfig& _CoreParameter = SConfig::GetInstance();
+  if (elapsed_ms == 0)
+    elapsed_ms = 1;
 
-  if (ElapseTime == 0)
-    ElapseTime = 1;
-
-  float FPS = (float)(s_drawn_frame.load() * 1000.0 / ElapseTime);
-  float VPS = (float)(s_drawn_video.load() * 1000.0 / ElapseTime);
+  float FPS = (float)(s_drawn_frame.load() * 1000.0 / elapsed_ms);
+  float VPS = (float)(s_drawn_video.load() * 1000.0 / elapsed_ms);
   float Speed = (float)(s_drawn_video.load() * (100 * 1000.0) /
-                        (VideoInterface::GetTargetRefreshRate() * ElapseTime));
+                        (VideoInterface::GetTargetRefreshRate() * elapsed_ms));
 
   // Settings are shown the same for both extended and summary info
   const std::string SSettings = fmt::format(
-      "{} {} | {} | {}", PowerPC::GetCPUName(), _CoreParameter.bCPUThread ? "DC" : "SC",
-      g_video_backend->GetDisplayName(), Config::Get(Config::MAIN_DSP_HLE) ? "HLE" : "LLE");
+      "{} {} | {} | {}", PowerPC::GetCPUName(),
+      Core::System::GetInstance().IsDualCoreMode() ? "DC" : "SC", g_video_backend->GetDisplayName(),
+      Config::Get(Config::MAIN_DSP_HLE) ? "HLE" : "LLE");
 
   std::string SFPS;
   if (Movie::IsPlayingInput())
@@ -949,7 +922,7 @@ void UpdateTitle(u32 ElapseTime)
   else
   {
     SFPS = fmt::format("FPS: {:.0f} - VPS: {:.0f} - {:.0f}%", FPS, VPS, Speed);
-    if (SConfig::GetInstance().m_InterfaceExtendedFPSInfo)
+    if (Config::Get(Config::MAIN_EXTENDED_FPS_INFO))
     {
       // Use extended or summary information. The summary information does not print the ticks data,
       // that's more of a debugging interest, it can always be optional of course if someone is
@@ -974,8 +947,8 @@ void UpdateTitle(u32 ElapseTime)
     }
   }
 
-  std::string message = fmt::format("{} | {} | {}", Common::scm_rev_str, SSettings, SFPS);
-  if (SConfig::GetInstance().m_show_active_title)
+  std::string message = fmt::format("{} | {} | {}", Common::GetScmRevStr(), SSettings, SFPS);
+  if (Config::Get(Config::MAIN_SHOW_ACTIVE_TITLE))
   {
     const std::string& title = SConfig::GetInstance().GetTitleDescription();
     if (!title.empty())
@@ -983,10 +956,12 @@ void UpdateTitle(u32 ElapseTime)
   }
 
   // Update the audio timestretcher with the current speed
-  if (g_sound_stream)
+  auto& system = Core::System::GetInstance();
+  SoundStream* sound_stream = system.GetSoundStream();
+  if (sound_stream)
   {
-    Mixer* pMixer = g_sound_stream->GetMixer();
-    pMixer->UpdateSpeed((float)Speed / 100);
+    Mixer* mixer = sound_stream->GetMixer();
+    mixer->UpdateSpeed((float)Speed / 100);
   }
 
   Host_UpdateTitle(message);
@@ -1023,7 +998,7 @@ int AddOnStateChangedCallback(StateChangedCallbackFunc callback)
 
 bool RemoveOnStateChangedCallback(int* handle)
 {
-  if (handle && *handle >= 0 && s_on_state_changed_callbacks.size() > *handle)
+  if (handle && *handle >= 0 && s_on_state_changed_callbacks.size() > static_cast<size_t>(*handle))
   {
     s_on_state_changed_callbacks[*handle] = StateChangedCallbackFunc();
     *handle = -1;

@@ -87,7 +87,7 @@ public class SyncChannelJobService extends JobService
       }
       else
       {
-        subscriptions = TvUtil.createUniversalSubscriptions();
+        subscriptions = TvUtil.createUniversalSubscriptions(context);
         for (HomeScreenChannel subscription : subscriptions)
         {
           long channelId = createChannel(subscription);
@@ -129,7 +129,7 @@ public class SyncChannelJobService extends JobService
                               builder.build().toContentValues());
 
       channelId = ContentUris.parseId(channelUrl);
-      Bitmap bitmap = TvUtil.convertToBitmap(context, R.drawable.ic_launcher);
+      Bitmap bitmap = TvUtil.convertToBitmap(context, R.drawable.ic_dolphin);
       ChannelLogoUtils.storeChannelLogo(context, channelId, bitmap);
 
       return channelId;

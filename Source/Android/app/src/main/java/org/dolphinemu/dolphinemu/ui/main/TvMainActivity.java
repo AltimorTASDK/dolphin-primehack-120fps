@@ -6,11 +6,10 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
-import android.util.TypedValue;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
+import androidx.core.splashscreen.SplashScreen;
 import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
 import androidx.leanback.app.BrowseSupportFragment;
@@ -28,9 +27,8 @@ import org.dolphinemu.dolphinemu.features.settings.ui.MenuTag;
 import org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity;
 import org.dolphinemu.dolphinemu.model.GameFile;
 import org.dolphinemu.dolphinemu.model.TvSettingsItem;
-import org.dolphinemu.dolphinemu.services.GameFileCacheService;
+import org.dolphinemu.dolphinemu.services.GameFileCacheManager;
 import org.dolphinemu.dolphinemu.ui.platform.Platform;
-import org.dolphinemu.dolphinemu.utils.AfterDirectoryInitializationRunner;
 import org.dolphinemu.dolphinemu.utils.DirectoryInitialization;
 import org.dolphinemu.dolphinemu.utils.FileBrowserHelper;
 import org.dolphinemu.dolphinemu.utils.PermissionsHandler;
@@ -55,6 +53,10 @@ public final class TvMainActivity extends FragmentActivity
   @Override
   protected void onCreate(Bundle savedInstanceState)
   {
+    SplashScreen splashScreen = SplashScreen.installSplashScreen(this);
+    splashScreen.setKeepOnScreenCondition(
+            () -> !DirectoryInitialization.areDolphinDirectoriesReady());
+
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_tv_main);
 
@@ -77,7 +79,7 @@ public final class TvMainActivity extends FragmentActivity
     if (DirectoryInitialization.shouldStart(this))
     {
       DirectoryInitialization.start(this);
-      GameFileCacheService.startLoad(this);
+      GameFileCacheManager.startLoad(this);
     }
 
     mPresenter.onResume();
@@ -118,13 +120,9 @@ public final class TvMainActivity extends FragmentActivity
   {
     mSwipeRefresh = findViewById(R.id.swipe_refresh);
 
-    TypedValue typedValue = new TypedValue();
-    getTheme().resolveAttribute(R.attr.colorPrimary, typedValue, true);
-    mSwipeRefresh.setColorSchemeColors(typedValue.data);
-
     mSwipeRefresh.setOnRefreshListener(this);
 
-    setRefreshing(GameFileCacheService.isLoading());
+    setRefreshing(GameFileCacheManager.isLoadingOrRescanning());
 
     final FragmentManager fragmentManager = getSupportFragmentManager();
     mBrowseFragment = new BrowseSupportFragment();
@@ -135,7 +133,7 @@ public final class TvMainActivity extends FragmentActivity
 
     // Set display parameters for the BrowseFragment
     mBrowseFragment.setHeadersState(BrowseSupportFragment.HEADERS_ENABLED);
-    mBrowseFragment.setBrandColor(ContextCompat.getColor(this, R.color.dolphin_blue_dark));
+    mBrowseFragment.setBrandColor(ContextCompat.getColor(this, R.color.dolphin_blue));
     buildRowsAdapter();
 
     mBrowseFragment.setOnItemViewClickedListener(
@@ -152,7 +150,7 @@ public final class TvMainActivity extends FragmentActivity
                 TvGameViewHolder holder = (TvGameViewHolder) itemViewHolder;
 
                 // Start the emulation activity and send the path of the clicked ISO to it.
-                String[] paths = GameFileCacheService.findSecondDiscAndGetPaths(holder.gameFile);
+                String[] paths = GameFileCacheManager.findSecondDiscAndGetPaths(holder.gameFile);
                 EmulationActivity.launch(TvMainActivity.this, paths, false);
               }
             });
@@ -294,7 +292,7 @@ public final class TvMainActivity extends FragmentActivity
       }
 
       DirectoryInitialization.start(this);
-      GameFileCacheService.startLoad(this);
+      GameFileCacheManager.startLoad(this);
     }
   }
 
@@ -305,7 +303,7 @@ public final class TvMainActivity extends FragmentActivity
   public void onRefresh()
   {
     setRefreshing(true);
-    GameFileCacheService.startRescan(this);
+    GameFileCacheManager.startRescan(this);
   }
 
   private void buildRowsAdapter()
@@ -315,12 +313,12 @@ public final class TvMainActivity extends FragmentActivity
 
     if (!DirectoryInitialization.isWaitingForWriteAccess(this))
     {
-      GameFileCacheService.startLoad(this);
+      GameFileCacheManager.startLoad(this);
     }
 
     for (Platform platform : Platform.values())
     {
-      ListRow row = buildGamesRow(platform, GameFileCacheService.getGameFilesForPlatform(platform));
+      ListRow row = buildGamesRow(platform, GameFileCacheManager.getGameFilesForPlatform(platform));
 
       // Add row to the adapter only if it is not empty.
       if (row != null)
@@ -373,20 +371,28 @@ public final class TvMainActivity extends FragmentActivity
             R.string.grid_menu_refresh));
 
     rowItems.add(new TvSettingsItem(R.id.menu_open_file,
-            R.drawable.ic_play,
+            R.drawable.ic_play_tv,
             R.string.grid_menu_open_file));
 
     rowItems.add(new TvSettingsItem(R.id.menu_install_wad,
-            R.drawable.ic_folder,
+            R.drawable.ic_folder_tv,
             R.string.grid_menu_install_wad));
 
+    rowItems.add(new TvSettingsItem(R.id.menu_load_wii_system_menu,
+            R.drawable.ic_folder_tv,
+            R.string.grid_menu_load_wii_system_menu));
+
     rowItems.add(new TvSettingsItem(R.id.menu_import_wii_save,
-            R.drawable.ic_folder,
+            R.drawable.ic_folder_tv,
             R.string.grid_menu_import_wii_save));
 
     rowItems.add(new TvSettingsItem(R.id.menu_import_nand_backup,
-            R.drawable.ic_folder,
+            R.drawable.ic_folder_tv,
             R.string.grid_menu_import_nand_backup));
+
+    rowItems.add(new TvSettingsItem(R.id.menu_online_system_update,
+            R.drawable.ic_folder_tv,
+            R.string.grid_menu_online_system_update));
 
     // Create a header for this row.
     HeaderItem header = new HeaderItem(R.string.settings, getString(R.string.settings));

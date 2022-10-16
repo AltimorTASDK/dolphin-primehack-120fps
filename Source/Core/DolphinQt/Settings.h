@@ -10,8 +10,9 @@
 #include <QRadioButton>
 #include <QSettings>
 
-#include "Core/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
 #include "DiscIO/Enums.h"
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
 
 namespace Core
 {
@@ -43,6 +44,8 @@ public:
   Settings& operator=(Settings&&) = delete;
 
   ~Settings();
+
+  void UnregisterDevicesChangedCallback();
 
   static Settings& Instance();
   static QSettings& GetQSettings();
@@ -99,12 +102,14 @@ public:
   void SetUSBKeyboardConnected(bool connected);
 
   // Graphics
-  void SetCursorVisibility(SConfig::ShowCursor hideCursor);
-  SConfig::ShowCursor GetCursorVisibility() const;
+  void SetCursorVisibility(Config::ShowCursor hideCursor);
+  Config::ShowCursor GetCursorVisibility() const;
   void SetLockCursor(bool lock_cursor);
   bool GetLockCursor() const;
   void SetKeepWindowOnTop(bool top);
   bool IsKeepWindowOnTopEnabled() const;
+  bool GetGraphicModsEnabled() const;
+  void SetGraphicModsEnabled(bool enabled);
 
   // Audio
   int GetVolume() const;
@@ -201,12 +206,15 @@ signals:
   void DevicesChanged();
   void SDCardInsertionChanged(bool inserted);
   void USBKeyboardConnectionChanged(bool connected);
+  void EnableGfxModsChanged(bool enabled);
 
 private:
+  Settings();
+
   bool m_batch = false;
   std::shared_ptr<NetPlay::NetPlayClient> m_client;
   std::shared_ptr<NetPlay::NetPlayServer> m_server;
-  Settings();
+  ControllerInterface::HotplugCallbackHandle m_hotplug_callback_handle;
 };
 
 Q_DECLARE_METATYPE(Core::State);

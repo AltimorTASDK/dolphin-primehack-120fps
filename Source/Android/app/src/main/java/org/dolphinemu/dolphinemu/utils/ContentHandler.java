@@ -8,10 +8,9 @@ import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.provider.DocumentsContract.Document;
 
+import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-
-import androidx.annotation.Keep;
 
 import org.dolphinemu.dolphinemu.DolphinApplication;
 
@@ -38,6 +37,11 @@ import java.util.function.Predicate;
 
 public class ContentHandler
 {
+  public static boolean isContentUri(@NonNull String pathOrUri)
+  {
+    return pathOrUri.startsWith("content://");
+  }
+
   @Keep
   public static int openFd(@NonNull String uri, @NonNull String mode)
   {
@@ -337,7 +341,7 @@ public class ContentHandler
    * provider to use URIs without any % characters.
    */
   @NonNull
-  private static Uri unmangle(@NonNull String uri) throws FileNotFoundException, SecurityException
+  public static Uri unmangle(@NonNull String uri) throws FileNotFoundException, SecurityException
   {
     int lastComponentEnd = getLastComponentEnd(uri);
     int lastComponentStart = getLastComponentStart(uri, lastComponentEnd);

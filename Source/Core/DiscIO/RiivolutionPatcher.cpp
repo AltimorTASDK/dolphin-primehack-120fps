@@ -4,7 +4,6 @@
 #include "DiscIO/RiivolutionPatcher.h"
 
 #include <algorithm>
-#include <cctype>
 #include <locale>
 #include <string>
 #include <string_view>
@@ -324,9 +323,8 @@ static bool CaseInsensitiveEquals(std::string_view a, std::string_view b)
 {
   if (a.size() != b.size())
     return false;
-  return std::equal(a.begin(), a.end(), b.begin(), [](char ca, char cb) {
-    return std::tolower(ca, std::locale::classic()) == std::tolower(cb, std::locale::classic());
-  });
+  return std::equal(a.begin(), a.end(), b.begin(),
+                    [](char ca, char cb) { return Common::ToLower(ca) == Common::ToLower(cb); });
 }
 
 static FSTBuilderNode* FindFileNodeInFST(std::string_view path, std::vector<FSTBuilderNode>* fst,
@@ -378,7 +376,7 @@ static DiscIO::FSTBuilderNode* FindFilenameNodeInFST(std::string_view filename,
       if (result)
         return result;
     }
-    else if (node.m_filename == filename)
+    else if (CaseInsensitiveEquals(node.m_filename, filename))
     {
       return &node;
     }
@@ -399,7 +397,7 @@ static void ApplyFilePatchToFST(const Patch& patch, const File& file,
     if (node)
       ApplyPatchToFile(patch, file, node);
   }
-  else if (CaseInsensitiveEquals(file.m_disc, "main.dol"))
+  else if (dol_node && CaseInsensitiveEquals(file.m_disc, "main.dol"))
   {
     // Special case: If the filename is "main.dol", we want to patch the main executable.
     ApplyPatchToFile(patch, file, dol_node);
@@ -460,15 +458,20 @@ static void ApplyFolderPatchToFST(const Patch& patch, const Folder& folder,
   ApplyFolderPatchToFST(patch, folder, fst, dol_node, folder.m_disc, folder.m_external);
 }
 
-void ApplyPatchesToFiles(const std::vector<Patch>& patches,
+void ApplyPatchesToFiles(const std::vector<Patch>& patches, PatchIndex index,
                          std::vector<DiscIO::FSTBuilderNode>* fst, DiscIO::FSTBuilderNode* dol_node)
 {
   for (const auto& patch : patches)
   {
-    for (const auto& file : patch.m_file_patches)
+    const auto& file_patches =
+        index == PatchIndex::DolphinSysFiles ? patch.m_sys_file_patches : patch.m_file_patches;
+    const auto& folder_patches =
+        index == PatchIndex::DolphinSysFiles ? patch.m_sys_folder_patches : patch.m_folder_patches;
+
+    for (const auto& file : file_patches)
       ApplyFilePatchToFST(patch, file, fst, dol_node);
 
-    for (const auto& folder : patch.m_folder_patches)
+    for (const auto& folder : folder_patches)
       ApplyFolderPatchToFST(patch, folder, fst, dol_node);
   }
 }

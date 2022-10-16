@@ -1,6 +1,8 @@
 // Copyright 2013 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "InputCommon/ControllerInterface/OSX/OSX.h"
+
 #include <thread>
 
 #include <Cocoa/Cocoa.h>
@@ -12,7 +14,6 @@
 #include "Common/Thread.h"
 
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
-#include "InputCommon/ControllerInterface/OSX/OSX.h"
 #include "InputCommon/ControllerInterface/OSX/OSXJoystick.h"
 #include "InputCommon/ControllerInterface/OSX/RunLoopStopper.h"
 
@@ -138,7 +139,7 @@ static std::string GetDeviceRefName(IOHIDDeviceRef inIOHIDDeviceRef)
 {
   const NSString* name = reinterpret_cast<const NSString*>(
       IOHIDDeviceGetProperty(inIOHIDDeviceRef, CFSTR(kIOHIDProductKey)));
-  return (name != nullptr) ? std::string(StripSpaces([name UTF8String])) : "Unknown device";
+  return (name != nullptr) ? std::string(StripWhitespace([name UTF8String])) : "Unknown device";
 }
 
 static void DeviceRemovalCallback(void* inContext, IOReturn inResult, void* inSender,

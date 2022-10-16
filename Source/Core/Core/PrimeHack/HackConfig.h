@@ -68,6 +68,9 @@ bool GetCulling();
 bool HandleReticleLockOn();
 void SetReticleLock(bool lock);
 
+bool NewMapControlsEnabled();
+void SetNewMapControls(bool new_controls);
+
 enum CameraLock { Centre, Angle45, Unlocked };
 
 void SetLockCamera(CameraLock lock);
@@ -75,6 +78,9 @@ CameraLock GetLockCamera();
 
 bool CheckPitchRecentre();
 bool ControllerMode();
+
+std::pair<std::string, std::string> GetProfiles();
+void ChangeControllerProfileAlt(std::string profile);
 
 double GetHorizontalAxis();
 double GetVerticalAxis();
@@ -93,4 +99,9 @@ void SetPendingModfile(std::string const& path);
 bool ModSuspended();
 void SuspendMod();
 void ResumeMod();
+
+void SetMotd(std::string const& motd);
+std::string GetMotd();
+
+bool UsingRealWiimote();
 }

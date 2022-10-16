@@ -24,6 +24,7 @@ namespace ControllerEmu
 {
 class Attachments;
 class PrimeHackModes;
+class PrimeHackAltProfile;
 class Buttons;
 class ControlGroup;
 class Cursor;
@@ -61,7 +62,8 @@ enum class WiimoteGroup
   Camera,
   Misc,
   ControlStick,
-  Modes
+  Modes,
+  AltProfileControls
 };
 
 enum class NunchukGroup;
@@ -119,6 +121,7 @@ public:
   static constexpr u16 BUTTON_HOME = 0x8000;
 
   explicit Wiimote(unsigned int index);
+  ~Wiimote();
 
   std::string GetName() const override;
   void LoadDefaults(const ControllerInterface& ciface) override;
@@ -157,7 +160,7 @@ public:
   std::tuple<double, double> GetPrimeStickXY();
   bool CheckPitchRecentre();
 
-  std::tuple <double, double, bool, bool, bool, bool> GetPrimeSettings();
+  std::tuple <double, double, bool, bool, bool, bool, bool> GetPrimeSettings();
 
   void Reset();
 
@@ -175,6 +178,8 @@ private:
   // static constexpr int EEPROM_SIZE = 16 * 1024;
   // This is the region exposed over bluetooth:
   static constexpr int EEPROM_FREE_SIZE = 0x1700;
+
+  void RefreshConfig();
 
   void StepDynamics();
   void UpdateButtonsStatus();
@@ -294,6 +299,7 @@ private:
   ControllerEmu::ControlGroup* m_primehack_motionhacks;
   ControllerEmu::ControlGroup* m_primehack_camera;
   ControllerEmu::ControlGroup* m_primehack_misc;
+  ControllerEmu::PrimeHackAltProfile* m_primehack_altprofile_controls;
   ControllerEmu::PrimeHackModes* m_primehack_modes;
   ControllerEmu::AnalogStick* m_primehack_stick;
 
@@ -319,6 +325,7 @@ private:
   ControllerEmu::SettingValue<bool> m_primehack_tapping_grapple;
   ControllerEmu::SettingValue<bool> m_primehack_scalesens;
   ControllerEmu::SettingValue<bool> m_primehack_movereticle;
+  ControllerEmu::SettingValue<bool> m_primehack_remap_map_controls;
 
   static constexpr u8 STICK_GATE_RADIUS = 0x60;
   static constexpr u8 STICK_CENTER = 0x80;
@@ -357,5 +364,7 @@ private:
   PositionalState m_shake_state;
 
   IMUCursorState m_imu_cursor_state;
+
+  size_t m_config_changed_callback_id;
 };
 }  // namespace WiimoteEmu

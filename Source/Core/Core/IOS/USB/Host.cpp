@@ -19,7 +19,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Common/Thread.h"
-#include "Core/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/IOS/USB/Common.h"
 #include "Core/IOS/USB/LibusbDevice.h"
@@ -55,7 +55,7 @@ void USBHost::UpdateWantDeterminism(const bool new_want_determinism)
 
 void USBHost::DoState(PointerWrap& p)
 {
-  if (IsOpened() && p.GetMode() == PointerWrap::MODE_READ)
+  if (IsOpened() && p.IsReadMode())
   {
     // After a state has loaded, there may be insertion hooks for devices that were
     // already plugged in, and which need to be triggered.
@@ -115,16 +115,16 @@ bool USBHost::AddNewDevices(std::set<u64>& new_devices, DeviceChangeHooks& hooks
                             const bool always_add_hooks)
 {
 #ifdef __LIBUSB__
-  if (SConfig::GetInstance().m_usb_passthrough_devices.empty())
+  auto whitelist = Config::GetUSBDeviceWhitelist();
+  if (whitelist.empty())
     return true;
 
   if (m_context.IsValid())
   {
-    m_context.GetDeviceList([&](libusb_device* device) {
+    const int ret = m_context.GetDeviceList([&](libusb_device* device) {
       libusb_device_descriptor descriptor;
       libusb_get_device_descriptor(device, &descriptor);
-      const std::pair<u16, u16> vid_pid = {descriptor.idVendor, descriptor.idProduct};
-      if (!SConfig::GetInstance().IsUSBDeviceWhitelisted(vid_pid))
+      if (whitelist.count({descriptor.idVendor, descriptor.idProduct}) == 0)
         return true;
 
       auto usb_device = std::make_unique<USB::LibusbDevice>(m_ios, device, descriptor);
@@ -137,6 +137,8 @@ bool USBHost::AddNewDevices(std::set<u64>& new_devices, DeviceChangeHooks& hooks
         hooks.emplace(GetDeviceById(id), ChangeEvent::Inserted);
       return true;
     });
+    if (ret != LIBUSB_SUCCESS)
+      WARN_LOG_FMT(IOS_USB, "GetDeviceList failed: {}", LibusbUtils::ErrorWrap(ret));
   }
 #endif
   return true;

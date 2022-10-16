@@ -23,6 +23,13 @@
 #include "Core/SyncIdentifier.h"
 #include "InputCommon/GCPadStatus.h"
 
+class BootSessionData;
+
+namespace IOS::HLE::FS
+{
+class FileSystem;
+}
+
 namespace UICommon
 {
 class GameFile;
@@ -34,7 +41,8 @@ class NetPlayUI
 {
 public:
   virtual ~NetPlayUI() {}
-  virtual void BootGame(const std::string& filename) = 0;
+  virtual void BootGame(const std::string& filename,
+                        std::unique_ptr<BootSessionData> boot_session_data) = 0;
   virtual void StopGame() = 0;
   virtual bool IsHosting() const = 0;
 
@@ -65,10 +73,10 @@ public:
                SyncIdentifierComparison* found = nullptr) = 0;
   virtual std::string FindGBARomPath(const std::array<u8, 20>& hash, std::string_view title,
                                      int device_number) = 0;
-  virtual void ShowMD5Dialog(const std::string& title) = 0;
-  virtual void SetMD5Progress(int pid, int progress) = 0;
-  virtual void SetMD5Result(int pid, const std::string& result) = 0;
-  virtual void AbortMD5() = 0;
+  virtual void ShowGameDigestDialog(const std::string& title) = 0;
+  virtual void SetGameDigestProgress(int pid, int progress) = 0;
+  virtual void SetGameDigestResult(int pid, const std::string& result) = 0;
+  virtual void AbortGameDigest() = 0;
 
   virtual void OnIndexAdded(bool success, std::string error) = 0;
   virtual void OnIndexRefreshFailed(std::string error) = 0;
@@ -77,6 +85,8 @@ public:
                                          const std::vector<int>& players) = 0;
   virtual void HideChunkedProgressDialog() = 0;
   virtual void SetChunkedProgress(int pid, u64 progress) = 0;
+
+  virtual void SetHostWiiSyncData(std::vector<u64> titles, std::string redirect_folder) = 0;
 };
 
 class Player
@@ -101,13 +111,13 @@ public:
                 const std::string& name, const NetTraversalConfig& traversal_config);
   ~NetPlayClient();
 
-  void GetPlayerList(std::string& list, std::vector<int>& pid_list);
   std::vector<const Player*> GetPlayers();
   const NetSettings& GetNetSettings() const;
 
   // Called from the GUI thread.
   bool IsConnected() const { return m_is_connected; }
   bool StartGame(const std::string& path);
+  void InvokeStop();
   bool StopGame();
   void Stop();
   bool ChangeGame(const std::string& game);
@@ -146,6 +156,9 @@ public:
   const PadMappingArray& GetWiimoteMapping() const;
 
   void AdjustPadBufferSize(unsigned int size);
+
+  void SetWiiSyncData(std::unique_ptr<IOS::HLE::FS::FileSystem> fs, std::vector<u64> titles,
+                      std::string redirect_folder);
 
   static SyncIdentifier GetSDCardIdentifier();
 
@@ -236,9 +249,11 @@ private:
   void Disconnect();
   bool Connect();
   void SendGameStatus();
-  void ComputeMD5(const SyncIdentifier& sync_identifier);
+  void ComputeGameDigest(const SyncIdentifier& sync_identifier);
   void DisplayPlayersPing();
   u32 GetPlayersMaxPing() const;
+
+  bool WaitForWiimoteBuffer(int _number);
 
   void OnData(sf::Packet& packet);
   void OnPlayerJoin(sf::Packet& packet);
@@ -266,7 +281,6 @@ private:
   void OnPing(sf::Packet& packet);
   void OnPlayerPingData(sf::Packet& packet);
   void OnDesyncDetected(sf::Packet& packet);
-  void OnSyncGCSRAM(sf::Packet& packet);
   void OnSyncSaveData(sf::Packet& packet);
   void OnSyncSaveDataNotify(sf::Packet& packet);
   void OnSyncSaveDataRaw(sf::Packet& packet);
@@ -279,11 +293,11 @@ private:
   void OnSyncCodesDataGecko(sf::Packet& packet);
   void OnSyncCodesNotifyAR(sf::Packet& packet);
   void OnSyncCodesDataAR(sf::Packet& packet);
-  void OnComputeMD5(sf::Packet& packet);
-  void OnMD5Progress(sf::Packet& packet);
-  void OnMD5Result(sf::Packet& packet);
-  void OnMD5Error(sf::Packet& packet);
-  void OnMD5Abort();
+  void OnComputeGameDigest(sf::Packet& packet);
+  void OnGameDigestProgress(sf::Packet& packet);
+  void OnGameDigestResult(sf::Packet& packet);
+  void OnGameDigestError(sf::Packet& packet);
+  void OnGameDigestAbort();
 
   bool m_is_connected = false;
   ConnectionState m_connection_state = ConnectionState::Failure;
@@ -295,8 +309,8 @@ private:
   std::string m_player_name;
   bool m_connecting = false;
   TraversalClient* m_traversal_client = nullptr;
-  std::thread m_MD5_thread;
-  bool m_should_compute_MD5 = false;
+  std::thread m_game_digest_thread;
+  bool m_should_compute_game_digest = false;
   Common::Event m_gc_pad_event;
   Common::Event m_wii_pad_event;
   Common::Event m_first_pad_status_received_event;
@@ -313,6 +327,10 @@ private:
 
   u64 m_initial_rtc = 0;
   u32 m_timebase_frame = 0;
+
+  std::unique_ptr<IOS::HLE::FS::FileSystem> m_wii_sync_fs;
+  std::vector<u64> m_wii_sync_titles;
+  std::string m_wii_sync_redirect_folder;
 };
 
 void NetPlay_Enable(NetPlayClient* const np);

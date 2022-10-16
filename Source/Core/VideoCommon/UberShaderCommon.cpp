@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "VideoCommon/UberShaderCommon.h"
+
 #include "VideoCommon/NativeVertexFormat.h"
 #include "VideoCommon/ShaderGenCommon.h"
 #include "VideoCommon/VideoCommon.h"
@@ -9,24 +10,6 @@
 
 namespace UberShader
 {
-void WriteUberShaderCommonHeader(ShaderCode& out, APIType api_type,
-                                 const ShaderHostConfig& host_config)
-{
-  // ==============================================
-  //  BitfieldExtract for APIs which don't have it
-  // ==============================================
-  if (!host_config.backend_bitfield)
-  {
-    out.Write("uint bitfieldExtract(uint val, int off, int size) {{\n"
-              "	// This built-in function is only support in OpenGL 4.0+ and ES 3.1+\n"
-              "	// Microsoft's HLSL compiler automatically optimises this to a bitfield extract "
-              "instruction.\n"
-              "	uint mask = uint((1 << size) - 1);\n"
-              "	return uint(val >> off) & mask;\n"
-              "}}\n\n");
-  }
-}
-
 void WriteLightingFunction(ShaderCode& out)
 {
   // ==============================================
@@ -94,8 +77,7 @@ void WriteVertexLighting(ShaderCode& out, APIType api_type, std::string_view wor
                          std::string_view out_color_1_var)
 {
   out.Write("// Lighting\n");
-  out.Write("{}for (uint chan = 0u; chan < {}u; chan++) {{\n",
-            api_type == APIType::D3D ? "[loop] " : "", NUM_XF_COLOR_CHANNELS);
+  out.Write("for (uint chan = 0u; chan < {}u; chan++) {{\n", NUM_XF_COLOR_CHANNELS);
   out.Write("  uint colorreg = xfmem_color(chan);\n"
             "  uint alphareg = xfmem_alpha(chan);\n"
             "  int4 mat = " I_MATERIALS "[chan + 2u]; \n"

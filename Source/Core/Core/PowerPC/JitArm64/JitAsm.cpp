@@ -1,6 +1,8 @@
 // Copyright 2014 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "Core/PowerPC/JitArm64/Jit.h"
+
 #include <limits>
 
 #include "Common/Arm64Emitter.h"
@@ -14,7 +16,6 @@
 #include "Core/HW/CPU.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/Gekko.h"
-#include "Core/PowerPC/JitArm64/Jit.h"
 #include "Core/PowerPC/JitCommon/JitAsmCommon.h"
 #include "Core/PowerPC/JitCommon/JitCache.h"
 #include "Core/PowerPC/MMU.h"
@@ -92,10 +93,10 @@ void JitArm64::GenerateAsm()
     // set the mem_base based on MSR flags
     LDR(IndexType::Unsigned, ARM64Reg::W28, PPC_REG, PPCSTATE_OFF(msr));
     FixupBranch physmem = TBNZ(ARM64Reg::W28, 31 - 27);
-    MOVP2R(MEM_REG, Memory::physical_base);
+    MOVP2R(MEM_REG, jo.fastmem_arena ? Memory::physical_base : Memory::physical_page_mappings_base);
     FixupBranch membaseend = B();
     SetJumpTarget(physmem);
-    MOVP2R(MEM_REG, Memory::logical_base);
+    MOVP2R(MEM_REG, jo.fastmem_arena ? Memory::logical_base : Memory::logical_page_mappings_base);
     SetJumpTarget(membaseend);
 
     // iCache[(address >> 2) & iCache_Mask];
@@ -140,10 +141,10 @@ void JitArm64::GenerateAsm()
   // set the mem_base based on MSR flags and jump to next block.
   LDR(IndexType::Unsigned, ARM64Reg::W28, PPC_REG, PPCSTATE_OFF(msr));
   FixupBranch physmem = TBNZ(ARM64Reg::W28, 31 - 27);
-  MOVP2R(MEM_REG, Memory::physical_base);
+  MOVP2R(MEM_REG, jo.fastmem_arena ? Memory::physical_base : Memory::physical_page_mappings_base);
   BR(ARM64Reg::X0);
   SetJumpTarget(physmem);
-  MOVP2R(MEM_REG, Memory::logical_base);
+  MOVP2R(MEM_REG, jo.fastmem_arena ? Memory::logical_base : Memory::logical_page_mappings_base);
   BR(ARM64Reg::X0);
 
   // Call JIT
@@ -495,7 +496,9 @@ void JitArm64::GenerateQuantizedLoads()
   // Q1 is a temporary
   ARM64Reg addr_reg = ARM64Reg::X0;
   ARM64Reg scale_reg = ARM64Reg::X1;
-  BitSet32 gprs_to_push = CALLER_SAVED_GPRS & ~BitSet32{0, 2, 3};
+  BitSet32 gprs_to_push = CALLER_SAVED_GPRS & ~BitSet32{2, 3};
+  if (!jo.memcheck)
+    gprs_to_push &= ~BitSet32{0};
   BitSet32 fprs_to_push = BitSet32(0xFFFFFFFF) & ~BitSet32{0, 1};
   ARM64FloatEmitter float_emit(this);
 
@@ -507,7 +510,7 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags = BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_32;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg,
                          gprs_to_push & ~BitSet32{1}, fprs_to_push, true);
 
     RET(ARM64Reg::X30);
@@ -517,15 +520,15 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags = BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.UXTL(8, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.UXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.UCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -535,15 +538,15 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags = BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.SXTL(8, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.SXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.SCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -553,14 +556,14 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags = BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.UXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.UCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -570,14 +573,14 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags = BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.SXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.SCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -588,7 +591,7 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags =
         BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_32;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg,
                          gprs_to_push & ~BitSet32{1}, fprs_to_push, true);
 
     RET(ARM64Reg::X30);
@@ -598,15 +601,15 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags =
         BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.UXTL(8, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.UXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.UCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -616,15 +619,15 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags =
         BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.SXTL(8, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.SXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.SCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -634,14 +637,14 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags =
         BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.UXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.UCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -651,14 +654,14 @@ void JitArm64::GenerateQuantizedLoads()
     constexpr u32 flags =
         BackPatchInfo::FLAG_LOAD | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     float_emit.SXTL(16, ARM64Reg::D0, ARM64Reg::D0);
     float_emit.SCVTF(32, ARM64Reg::D0, ARM64Reg::D0);
 
-    MOVP2R(addr_reg, &m_dequantizeTableS);
-    ADD(scale_reg, addr_reg, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
+    MOVP2R(ARM64Reg::X2, &m_dequantizeTableS);
+    ADD(scale_reg, ARM64Reg::X2, scale_reg, ArithOption(scale_reg, ShiftType::LSL, 3));
     float_emit.LDR(32, IndexType::Unsigned, ARM64Reg::D1, scale_reg, 0);
     float_emit.FMUL(32, ARM64Reg::D0, ARM64Reg::D0, ARM64Reg::D1, 0);
     RET(ARM64Reg::X30);
@@ -696,12 +699,17 @@ void JitArm64::GenerateQuantizedStores()
   // X0 is the scale
   // X1 is the address
   // X2 is a temporary
+  // X3 is a temporary if jo.fastmem_arena is false (used in EmitBackpatchRoutine)
   // X30 is LR
   // Q0 is the register
   // Q1 is a temporary
   ARM64Reg scale_reg = ARM64Reg::X0;
   ARM64Reg addr_reg = ARM64Reg::X1;
-  BitSet32 gprs_to_push = CALLER_SAVED_GPRS & ~BitSet32{0, 1, 2};
+  BitSet32 gprs_to_push = CALLER_SAVED_GPRS & ~BitSet32{0, 2};
+  if (!jo.memcheck)
+    gprs_to_push &= ~BitSet32{1};
+  if (!jo.fastmem_arena)
+    gprs_to_push &= ~BitSet32{3};
   BitSet32 fprs_to_push = BitSet32(0xFFFFFFFF) & ~BitSet32{0, 1};
   ARM64FloatEmitter float_emit(this);
 
@@ -713,8 +721,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags = BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_32;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -732,8 +740,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags = BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -751,8 +759,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags = BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -769,8 +777,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags = BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -787,8 +795,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags = BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT |
                           BackPatchInfo::FLAG_PAIR | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -798,8 +806,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags =
         BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_32;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -817,8 +825,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags =
         BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -836,8 +844,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags =
         BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_8;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -854,8 +862,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags =
         BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }
@@ -872,8 +880,8 @@ void JitArm64::GenerateQuantizedStores()
     constexpr u32 flags =
         BackPatchInfo::FLAG_STORE | BackPatchInfo::FLAG_FLOAT | BackPatchInfo::FLAG_SIZE_16;
 
-    EmitBackpatchRoutine(flags, jo.fastmem_arena, jo.fastmem_arena, ARM64Reg::D0, addr_reg,
-                         gprs_to_push, fprs_to_push, true);
+    EmitBackpatchRoutine(flags, MemAccessMode::Auto, ARM64Reg::D0, addr_reg, gprs_to_push,
+                         fprs_to_push, true);
 
     RET(ARM64Reg::X30);
   }

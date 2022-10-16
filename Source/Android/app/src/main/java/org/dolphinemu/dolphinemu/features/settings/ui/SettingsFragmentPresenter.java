@@ -4,10 +4,10 @@ package org.dolphinemu.dolphinemu.features.settings.ui;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 
-import org.dolphinemu.dolphinemu.DolphinApplication;
 import org.dolphinemu.dolphinemu.NativeLibrary;
 import org.dolphinemu.dolphinemu.R;
 import org.dolphinemu.dolphinemu.activities.UserDataActivity;
@@ -17,8 +17,6 @@ import org.dolphinemu.dolphinemu.features.settings.model.AdHocBooleanSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.FloatSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting;
-import org.dolphinemu.dolphinemu.features.settings.model.LegacyBooleanSetting;
-import org.dolphinemu.dolphinemu.features.settings.model.LegacyIntSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.LegacyStringSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.PostProcessing;
 import org.dolphinemu.dolphinemu.features.settings.model.Settings;
@@ -27,7 +25,9 @@ import org.dolphinemu.dolphinemu.features.settings.model.WiimoteProfileStringSet
 import org.dolphinemu.dolphinemu.features.settings.model.view.CheckBoxSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.view.FilePicker;
 import org.dolphinemu.dolphinemu.features.settings.model.view.HeaderSetting;
+import org.dolphinemu.dolphinemu.features.settings.model.view.HyperLinkHeaderSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.view.InputBindingSetting;
+import org.dolphinemu.dolphinemu.features.settings.model.view.InputStringSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.view.IntSliderSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.view.InvertedCheckBoxSetting;
 import org.dolphinemu.dolphinemu.features.settings.model.view.LogCheckBoxSetting;
@@ -41,11 +41,12 @@ import org.dolphinemu.dolphinemu.features.settings.model.view.StringSingleChoice
 import org.dolphinemu.dolphinemu.features.settings.model.view.SubmenuSetting;
 import org.dolphinemu.dolphinemu.features.settings.utils.SettingsFile;
 import org.dolphinemu.dolphinemu.ui.main.MainPresenter;
-import org.dolphinemu.dolphinemu.utils.DirectoryInitialization;
+import org.dolphinemu.dolphinemu.utils.BooleanSupplier;
 import org.dolphinemu.dolphinemu.utils.EGLHelper;
-import org.dolphinemu.dolphinemu.utils.Log;
+import org.dolphinemu.dolphinemu.utils.ThemeHelper;
+import org.dolphinemu.dolphinemu.utils.ThreadUtil;
+import org.dolphinemu.dolphinemu.utils.WiiUtils;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -59,12 +60,14 @@ public final class SettingsFragmentPresenter
           NativeLibrary.GetLogTypeNames();
 
   public static final String ARG_CONTROLLER_TYPE = "controller_type";
+  public static final String ARG_SERIALPORT1_TYPE = "serialport1_type";
   private MenuTag mMenuTag;
   private String mGameID;
 
   private Settings mSettings;
   private ArrayList<SettingsItem> mSettingsList;
 
+  private int mSerialPort1Type;
   private int mControllerNumber;
   private int mControllerType;
 
@@ -88,11 +91,21 @@ public final class SettingsFragmentPresenter
     {
       mControllerNumber = menuTag.getSubType();
     }
+    else if (menuTag.isSerialPort1Menu())
+    {
+      mSerialPort1Type = extras.getInt(ARG_SERIALPORT1_TYPE);
+    }
   }
 
   public void onViewCreated(MenuTag menuTag, Settings settings)
   {
     this.mMenuTag = menuTag;
+
+    if (!TextUtils.isEmpty(mGameID))
+    {
+      mView.getActivity().setTitle(mContext.getString(R.string.game_settings, mGameID));
+    }
+
     setSettings(settings);
   }
 
@@ -122,10 +135,6 @@ public final class SettingsFragmentPresenter
 
   private void loadSettingsList()
   {
-    if (!TextUtils.isEmpty(mGameID))
-    {
-      mView.getActivity().setTitle(mContext.getString(R.string.game_settings, mGameID));
-    }
     ArrayList<SettingsItem> sl = new ArrayList<>();
 
     switch (mMenuTag)
@@ -168,6 +177,10 @@ public final class SettingsFragmentPresenter
 
       case GRAPHICS:
         addGraphicsSettings(sl);
+        break;
+
+      case CONFIG_SERIALPORT1:
+        addSerialPortSubSettings(sl, mSerialPort1Type);
         break;
 
       case GCPAD_TYPE:
@@ -296,12 +309,65 @@ public final class SettingsFragmentPresenter
               R.array.orientationValues));
     }
 
+    // Only android 9+ supports this feature.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+    {
+      sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_EXPAND_TO_CUTOUT_AREA,
+              R.string.expand_to_cutout_area, R.string.expand_to_cutout_area_description));
+    }
+
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_USE_PANIC_HANDLERS,
             R.string.panic_handlers, R.string.panic_handlers_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_OSD_MESSAGES, R.string.osd_messages,
             R.string.osd_messages_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_USE_GAME_COVERS,
             R.string.download_game_covers, 0));
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_SHOW_GAME_TITLES,
+            R.string.show_titles_in_game_list, R.string.show_titles_in_game_list_description));
+
+    AbstractIntSetting appTheme = new AbstractIntSetting()
+    {
+      @Override public boolean isOverridden(Settings settings)
+      {
+        return IntSetting.MAIN_INTERFACE_THEME.isOverridden(settings);
+      }
+
+      @Override public boolean isRuntimeEditable()
+      {
+        // This only affects app UI
+        return true;
+      }
+
+      @Override public boolean delete(Settings settings)
+      {
+        ThemeHelper.deleteThemeKey(mView.getActivity());
+        return IntSetting.MAIN_INTERFACE_THEME.delete(settings);
+      }
+
+      @Override public int getInt(Settings settings)
+      {
+        return IntSetting.MAIN_INTERFACE_THEME.getInt(settings);
+      }
+
+      @Override public void setInt(Settings settings, int newValue)
+      {
+        ThemeHelper.saveTheme(mView.getActivity(), newValue);
+        IntSetting.MAIN_INTERFACE_THEME.setInt(settings, newValue);
+        mView.getActivity().recreate();
+      }
+    };
+
+    // If a Monet theme is run on a device below API 31, the app will crash
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+    {
+      sl.add(new SingleChoiceSetting(mContext, appTheme, R.string.change_theme, 0,
+              R.array.themeEntriesA12, R.array.themeValuesA12));
+    }
+    else
+    {
+      sl.add(new SingleChoiceSetting(mContext, appTheme, R.string.change_theme, 0,
+              R.array.themeEntries, R.array.themeValues));
+    }
   }
 
   private void addAudioSettings(ArrayList<SettingsItem> sl)
@@ -407,8 +473,8 @@ public final class SettingsFragmentPresenter
             MainPresenter.REQUEST_DIRECTORY, "/Load"));
     sl.add(new FilePicker(mContext, StringSetting.MAIN_RESOURCEPACK_PATH,
             R.string.resource_pack_path, 0, MainPresenter.REQUEST_DIRECTORY, "/ResourcePacks"));
-    sl.add(new FilePicker(mContext, StringSetting.MAIN_SD_PATH, R.string.SD_card_path, 0,
-            MainPresenter.REQUEST_SD_FILE, "/Wii/sd.raw"));
+    sl.add(new FilePicker(mContext, StringSetting.MAIN_WFS_PATH, R.string.wfs_path, 0,
+            MainPresenter.REQUEST_DIRECTORY, "/WFS"));
   }
 
   private void addGameCubeSettings(ArrayList<SettingsItem> sl)
@@ -419,10 +485,15 @@ public final class SettingsFragmentPresenter
             R.array.slotDeviceEntries, R.array.slotDeviceValues));
     sl.add(new SingleChoiceSetting(mContext, IntSetting.MAIN_SLOT_B, R.string.slot_b_device, 0,
             R.array.slotDeviceEntries, R.array.slotDeviceValues));
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.MAIN_SERIAL_PORT_1,
+            R.string.serial_port_1_device, 0,
+            R.array.serialPort1DeviceEntries, R.array.serialPort1DeviceValues,
+            MenuTag.CONFIG_SERIALPORT1));
   }
 
   private void addWiiSettings(ArrayList<SettingsItem> sl)
   {
+    sl.add(new HeaderSetting(mContext, R.string.wii_misc_settings, 0));
     sl.add(new SingleChoiceSetting(mContext, IntSetting.SYSCONF_LANGUAGE, R.string.system_language,
             0, R.array.wiiSystemLanguageEntries, R.array.wiiSystemLanguageValues));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.SYSCONF_WIDESCREEN, R.string.wii_widescreen,
@@ -433,10 +504,29 @@ public final class SettingsFragmentPresenter
             R.string.wii_screensaver, R.string.wii_screensaver_description));
     sl.add(new SingleChoiceSetting(mContext, IntSetting.SYSCONF_SOUND_MODE, R.string.sound_mode, 0,
             R.array.soundModeEntries, R.array.soundModeValues));
+
+    sl.add(new HeaderSetting(mContext, R.string.wii_sd_card_settings, 0));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_WII_SD_CARD, R.string.insert_sd_card,
             R.string.insert_sd_card_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_ALLOW_SD_WRITES,
             R.string.wii_sd_card_allow_writes, 0));
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_WII_SD_CARD_ENABLE_FOLDER_SYNC,
+            R.string.wii_sd_card_sync, R.string.wii_sd_card_sync_description));
+    // TODO: Hardcoding "Load" here is wrong, because the user may have changed the Load path.
+    // The code structure makes this hard to fix, and with scoped storage active the Load path
+    // can't be changed anyway
+    sl.add(new FilePicker(mContext, StringSetting.MAIN_WII_SD_CARD_IMAGE_PATH,
+            R.string.wii_sd_card_path, 0, MainPresenter.REQUEST_SD_FILE, "/Load/WiiSD.raw"));
+    sl.add(new FilePicker(mContext, StringSetting.MAIN_WII_SD_CARD_SYNC_FOLDER_PATH,
+            R.string.wii_sd_sync_folder, 0, MainPresenter.REQUEST_DIRECTORY, "/Load/WiiSDSync/"));
+    sl.add(new RunRunnable(mContext, R.string.wii_sd_card_folder_to_file, 0,
+            R.string.wii_sd_card_folder_to_file_confirmation, 0,
+            () -> convertOnThread(WiiUtils::syncSdFolderToSdImage)));
+    sl.add(new RunRunnable(mContext, R.string.wii_sd_card_file_to_folder, 0,
+            R.string.wii_sd_card_file_to_folder_confirmation, 0,
+            () -> convertOnThread(WiiUtils::syncSdImageToSdFolder)));
+
+    sl.add(new HeaderSetting(mContext, R.string.wii_wiimote_settings, 0));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.SYSCONF_WIIMOTE_MOTOR,
             R.string.wiimote_rumble, 0));
     sl.add(new IntSliderSetting(mContext, IntSetting.SYSCONF_SPEAKER_VOLUME,
@@ -542,6 +632,8 @@ public final class SettingsFragmentPresenter
     }
     sl.add(new SingleChoiceSetting(mContext, IntSetting.MAIN_CPU_CORE, R.string.cpu_core, 0,
             emuCoresEntries, emuCoresValues));
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_MMU, R.string.mmu_enable,
+            R.string.mmu_enable_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_OVERCLOCK_ENABLE,
             R.string.overclock_enable, R.string.overclock_enable_description));
     sl.add(new PercentSliderSetting(mContext, FloatSetting.MAIN_OVERCLOCK, R.string.overclock_title,
@@ -551,53 +643,43 @@ public final class SettingsFragmentPresenter
             R.array.synchronizeGpuThreadValues));
   }
 
+  private void addSerialPortSubSettings(ArrayList<SettingsItem> sl, int serialPort1Type)
+  {
+    if (serialPort1Type == 10) // Broadband Adapter (XLink Kai)
+    {
+      sl.add(new HyperLinkHeaderSetting(mContext, R.string.xlink_kai_guide_header, 0));
+      sl.add(new InputStringSetting(mContext, StringSetting.MAIN_BBA_XLINK_IP,
+              R.string.xlink_kai_bba_ip, R.string.xlink_kai_bba_ip_description));
+    }
+    else if (serialPort1Type == 12) // Broadband Adapter (Built In)
+    {
+      sl.add(new InputStringSetting(mContext, StringSetting.MAIN_BBA_BUILTIN_DNS,
+              R.string.bba_builtin_dns, R.string.bba_builtin_dns_description));
+    }
+  }
+
   private void addGcPadSettings(ArrayList<SettingsItem> sl)
   {
-    for (int i = 0; i < 4; i++)
-    {
-      // GameCube controller 1 is set to Emulated by default, all others disabled
-      int defaultValue = i == 0 ? 6 : 0;
-
-      LegacyIntSetting gcPadSetting;
-      if (mGameID.equals(""))
-      {
-        gcPadSetting = new LegacyIntSetting(Settings.FILE_DOLPHIN, Settings.SECTION_INI_CORE,
-                SettingsFile.KEY_GCPAD_TYPE + i, defaultValue);
-      }
-      else
-      {
-        gcPadSetting = new LegacyIntSetting(Settings.GAME_SETTINGS_PLACEHOLDER_FILE_NAME,
-                Settings.SECTION_CONTROLS, SettingsFile.KEY_GCPAD_G_TYPE + i, defaultValue);
-      }
-      // TODO: This controller_0 + i business is quite the hack. It should work, but only if the definitions are kept together and in order.
-      sl.add(new SingleChoiceSetting(mContext, gcPadSetting, R.string.controller_0 + i, 0,
-              R.array.gcpadTypeEntries, R.array.gcpadTypeValues, MenuTag.getGCPadMenuTag(i)));
-    }
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.MAIN_SI_DEVICE_0, R.string.controller_0, 0,
+            R.array.gcpadTypeEntries, R.array.gcpadTypeValues, MenuTag.getGCPadMenuTag(0)));
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.MAIN_SI_DEVICE_1, R.string.controller_1, 0,
+            R.array.gcpadTypeEntries, R.array.gcpadTypeValues, MenuTag.getGCPadMenuTag(1)));
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.MAIN_SI_DEVICE_2, R.string.controller_2, 0,
+            R.array.gcpadTypeEntries, R.array.gcpadTypeValues, MenuTag.getGCPadMenuTag(2)));
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.MAIN_SI_DEVICE_3, R.string.controller_3, 0,
+            R.array.gcpadTypeEntries, R.array.gcpadTypeValues, MenuTag.getGCPadMenuTag(3)));
   }
 
   private void addWiimoteSettings(ArrayList<SettingsItem> sl)
   {
-    for (int i = 0; i < 4; i++)
-    {
-      // Wii Remote 1 is set to Emulated by default, all others disabled
-      int defaultValue = i == 0 ? 1 : 0;
-
-      LegacyIntSetting wiimoteSetting;
-      if (mGameID.equals(""))
-      {
-        wiimoteSetting = new LegacyIntSetting(Settings.FILE_WIIMOTE,
-                Settings.SECTION_WIIMOTE + (i + 1), SettingsFile.KEY_WIIMOTE_TYPE, defaultValue);
-      }
-      else
-      {
-        wiimoteSetting = new LegacyIntSetting(Settings.GAME_SETTINGS_PLACEHOLDER_FILE_NAME,
-                Settings.SECTION_CONTROLS, SettingsFile.KEY_WIIMOTE_G_TYPE + i, defaultValue);
-      }
-      // TODO: This wiimote_0 + i business is quite the hack. It should work, but only if the definitions are kept together and in order.
-      sl.add(new SingleChoiceSetting(mContext, wiimoteSetting, R.string.wiimote_4 + i, 0,
-              R.array.wiimoteTypeEntries, R.array.wiimoteTypeValues,
-              MenuTag.getWiimoteMenuTag(i + 4)));
-    }
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.WIIMOTE_1_SOURCE, R.string.wiimote_4, 0,
+            R.array.wiimoteTypeEntries, R.array.wiimoteTypeValues, MenuTag.getWiimoteMenuTag(4)));
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.WIIMOTE_2_SOURCE, R.string.wiimote_5, 0,
+            R.array.wiimoteTypeEntries, R.array.wiimoteTypeValues, MenuTag.getWiimoteMenuTag(5)));
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.WIIMOTE_3_SOURCE, R.string.wiimote_6, 0,
+            R.array.wiimoteTypeEntries, R.array.wiimoteTypeValues, MenuTag.getWiimoteMenuTag(6)));
+    sl.add(new SingleChoiceSetting(mContext, IntSetting.WIIMOTE_4_SOURCE, R.string.wiimote_7, 0,
+            R.array.wiimoteTypeEntries, R.array.wiimoteTypeValues, MenuTag.getWiimoteMenuTag(7)));
   }
 
   private void addGraphicsSettings(ArrayList<SettingsItem> sl)
@@ -713,7 +795,7 @@ public final class SettingsFragmentPresenter
             R.string.fast_depth_calculation, R.string.fast_depth_calculation_description));
     sl.add(new InvertedCheckBoxSetting(mContext, BooleanSetting.GFX_HACK_BBOX_ENABLE,
             R.string.disable_bbox, R.string.disable_bbox_description));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_HACK_VERTEX_ROUDING,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_HACK_VERTEX_ROUNDING,
             R.string.vertex_rounding, R.string.vertex_rounding_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_SAVE_TEXTURE_CACHE_TO_STATE,
             R.string.texture_cache_to_state, R.string.texture_cache_to_state_description));
@@ -721,7 +803,9 @@ public final class SettingsFragmentPresenter
 
   private void addAdvancedGraphicsSettings(ArrayList<SettingsItem> sl)
   {
-    sl.add(new HeaderSetting(mContext, R.string.custom_textures, 0));
+    sl.add(new HeaderSetting(mContext, R.string.gfx_mods_and_custom_textures, 0));
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_MODS_ENABLE,
+            R.string.gfx_mods, R.string.gfx_mods_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_HIRES_TEXTURES,
             R.string.load_custom_texture, R.string.load_custom_texture_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_CACHE_HIRES_TEXTURES,
@@ -742,6 +826,8 @@ public final class SettingsFragmentPresenter
             R.string.backend_multithreading, R.string.backend_multithreading_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_HACK_EFB_DEFER_INVALIDATION,
             R.string.defer_efb_invalidation, R.string.defer_efb_invalidation_description));
+    sl.add(new InvertedCheckBoxSetting(mContext, BooleanSetting.GFX_HACK_FAST_TEXTURE_SAMPLING,
+            R.string.manual_texture_sampling, R.string.manual_texture_sampling_description));
     sl.add(new CheckBoxSetting(mContext, BooleanSetting.GFX_INTERNAL_RESOLUTION_FRAME_DUMPS,
             R.string.internal_resolution_dumps, R.string.internal_resolution_dumps_description));
 
@@ -789,24 +875,25 @@ public final class SettingsFragmentPresenter
             R.string.debug_fastmem, 0));
 
     sl.add(new HeaderSetting(mContext, R.string.debug_jit_header, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_OFF, R.string.debug_jitoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_LOAD_STORE_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_OFF, R.string.debug_jitoff,
+            0));
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_LOAD_STORE_OFF,
             R.string.debug_jitloadstoreoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_LOAD_STORE_FLOATING_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_LOAD_STORE_FLOATING_OFF,
             R.string.debug_jitloadstorefloatingoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_LOAD_STORE_PAIRED_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_LOAD_STORE_PAIRED_OFF,
             R.string.debug_jitloadstorepairedoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_FLOATING_POINT_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_FLOATING_POINT_OFF,
             R.string.debug_jitfloatingpointoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_INTEGER_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_INTEGER_OFF,
             R.string.debug_jitintegeroff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_PAIRED_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_PAIRED_OFF,
             R.string.debug_jitpairedoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_SYSTEM_REGISTERS_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_SYSTEM_REGISTERS_OFF,
             R.string.debug_jitsystemregistersoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_BRANCH_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_BRANCH_OFF,
             R.string.debug_jitbranchoff, 0));
-    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_JIT_REGISTER_CACHE_OFF,
+    sl.add(new CheckBoxSetting(mContext, BooleanSetting.MAIN_DEBUG_JIT_REGISTER_CACHE_OFF,
             R.string.debug_jitregistercacheoff, 0));
   }
 
@@ -825,7 +912,7 @@ public final class SettingsFragmentPresenter
 
   private void addGcPadSubSettings(ArrayList<SettingsItem> sl, int gcPadNumber, int gcPadType)
   {
-    if (gcPadType == 1) // Emulated
+    if (gcPadType == 6) // Emulated
     {
       sl.add(new HeaderSetting(mContext, R.string.generic_buttons, 0));
       sl.add(new InputBindingSetting(mContext, Settings.FILE_DOLPHIN, Settings.SECTION_BINDINGS,
@@ -884,17 +971,12 @@ public final class SettingsFragmentPresenter
               SettingsFile.KEY_EMU_RUMBLE + gcPadNumber, R.string.emulation_control_rumble,
               mGameID));
     }
-    else // Adapter
+    else if (gcPadType == 12) // Adapter
     {
-      LegacyBooleanSetting rumble = new LegacyBooleanSetting(Settings.FILE_DOLPHIN,
-              Settings.SECTION_INI_CORE, SettingsFile.KEY_GCADAPTER_RUMBLE + gcPadNumber, false);
-      LegacyBooleanSetting bongo = new LegacyBooleanSetting(Settings.FILE_DOLPHIN,
-              Settings.SECTION_INI_CORE, SettingsFile.KEY_GCADAPTER_BONGOS + gcPadNumber, false);
-
-      sl.add(new CheckBoxSetting(mContext, rumble, R.string.gc_adapter_rumble,
-              R.string.gc_adapter_rumble_description));
-      sl.add(new CheckBoxSetting(mContext, bongo, R.string.gc_adapter_bongos,
-              R.string.gc_adapter_bongos_description));
+      sl.add(new CheckBoxSetting(mContext, BooleanSetting.getSettingForAdapterRumble(gcPadNumber),
+              R.string.gc_adapter_rumble, R.string.gc_adapter_rumble_description));
+      sl.add(new CheckBoxSetting(mContext, BooleanSetting.getSettingForSimulateKonga(gcPadNumber),
+              R.string.gc_adapter_bongos, R.string.gc_adapter_bongos_description));
     }
   }
 
@@ -1371,5 +1453,12 @@ public final class SettingsFragmentPresenter
     }
 
     mView.getAdapter().notifyAllSettingsChanged();
+  }
+
+  private void convertOnThread(BooleanSupplier f)
+  {
+    ThreadUtil.runOnThreadAndShowResult(mView.getActivity(), R.string.wii_converting, 0, () ->
+            mContext.getResources().getString(
+                    f.get() ? R.string.wii_convert_success : R.string.wii_convert_failure));
   }
 }

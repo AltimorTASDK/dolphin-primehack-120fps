@@ -1,6 +1,8 @@
 // Copyright 2008 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "DiscIO/Blob.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <limits>
@@ -13,12 +15,12 @@
 #include "Common/IOFile.h"
 #include "Common/MsgHandler.h"
 
-#include "DiscIO/Blob.h"
 #include "DiscIO/CISOBlob.h"
 #include "DiscIO/CompressedBlob.h"
 #include "DiscIO/DirectoryBlob.h"
 #include "DiscIO/DriveBlob.h"
 #include "DiscIO/FileBlob.h"
+#include "DiscIO/NFSBlob.h"
 #include "DiscIO/TGCBlob.h"
 #include "DiscIO/WIABlob.h"
 #include "DiscIO/WbfsBlob.h"
@@ -49,6 +51,10 @@ std::string GetName(BlobType blob_type, bool translate)
     return "WIA";
   case BlobType::RVZ:
     return "RVZ";
+  case BlobType::MOD_DESCRIPTOR:
+    return translate_str("Mod");
+  case BlobType::NFS:
+    return "NFS";
   default:
     return "";
   }
@@ -239,6 +245,8 @@ std::unique_ptr<BlobReader> CreateBlobReader(const std::string& filename)
     return WIAFileReader::Create(std::move(file), filename);
   case RVZ_MAGIC:
     return RVZFileReader::Create(std::move(file), filename);
+  case NFS_MAGIC:
+    return NFSFileReader::Create(std::move(file), filename);
   default:
     if (auto directory_blob = DirectoryBlobReader::Create(filename))
       return std::move(directory_blob);

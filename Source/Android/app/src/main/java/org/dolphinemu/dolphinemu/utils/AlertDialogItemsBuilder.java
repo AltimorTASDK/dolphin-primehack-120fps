@@ -2,10 +2,10 @@
 
 package org.dolphinemu.dolphinemu.utils;
 
-import androidx.appcompat.app.AlertDialog;
-
 import android.content.Context;
 import android.content.DialogInterface.OnClickListener;
+
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import java.util.ArrayList;
 
@@ -33,7 +33,7 @@ public class AlertDialogItemsBuilder
     mListeners.add(listener);
   }
 
-  public void applyToBuilder(AlertDialog.Builder builder)
+  public void applyToBuilder(MaterialAlertDialogBuilder builder)
   {
     CharSequence[] labels = new CharSequence[mLabels.size()];
     labels = mLabels.toArray(labels);

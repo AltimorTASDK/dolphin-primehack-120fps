@@ -1,3 +1,6 @@
+// Copyright 2016 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 #include "Core/DolphinAnalytics.h"
 
 #include <array>
@@ -7,7 +10,6 @@
 #include <vector>
 
 #include <fmt/format.h>
-#include <mbedtls/sha1.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -22,6 +24,7 @@
 #include "Common/CPUDetect.h"
 #include "Common/CommonTypes.h"
 #include "Common/Config/Config.h"
+#include "Common/Crypto/SHA1.h"
 #include "Common/Random.h"
 #include "Common/Timer.h"
 #include "Common/Version.h"
@@ -97,9 +100,8 @@ void DolphinAnalytics::GenerateNewIdentity()
 
 std::string DolphinAnalytics::MakeUniqueId(std::string_view data) const
 {
-  std::array<u8, 20> digest;
   const auto input = std::string{m_unique_id}.append(data);
-  mbedtls_sha1_ret(reinterpret_cast<const u8*>(input.c_str()), input.size(), digest.data());
+  const auto digest = Common::SHA1::CalculateDigest(input);
 
   // Convert to hex string and truncate to 64 bits.
   std::string out;
@@ -133,7 +135,7 @@ void DolphinAnalytics::ReportGameStart()
 }
 
 // Keep in sync with enum class GameQuirk definition.
-constexpr std::array<const char*, 24> GAME_QUIRKS_NAMES{
+constexpr std::array<const char*, 28> GAME_QUIRKS_NAMES{
     "icache-matters",
     "directly-reads-wiimote-input",
     "uses-DVDLowStopLaser",
@@ -158,6 +160,10 @@ constexpr std::array<const char*, 24> GAME_QUIRKS_NAMES{
     "sets-xf-clipdisable-bit-0",
     "sets-xf-clipdisable-bit-1",
     "sets-xf-clipdisable-bit-2",
+    "mismatched-gpu-colors-between-cp-and-xf",
+    "mismatched-gpu-normals-between-cp-and-xf",
+    "mismatched-gpu-tex-coords-between-cp-and-xf",
+    "mismatched-gpu-matrix-indices-between-cp-and-xf",
 };
 static_assert(GAME_QUIRKS_NAMES.size() == static_cast<u32>(GameQuirk::COUNT),
               "Game quirks names and enum definition are out of sync.");
@@ -225,18 +231,18 @@ void DolphinAnalytics::InitializePerformanceSampling()
   u64 wait_us =
       PERFORMANCE_SAMPLING_INITIAL_WAIT_TIME_SECS * 1000000 +
       Common::Random::GenerateValue<u64>() % (PERFORMANCE_SAMPLING_WAIT_TIME_JITTER_SECS * 1000000);
-  m_sampling_next_start_us = Common::Timer::GetTimeUs() + wait_us;
+  m_sampling_next_start_us = Common::Timer::NowUs() + wait_us;
 }
 
 bool DolphinAnalytics::ShouldStartPerformanceSampling()
 {
-  if (Common::Timer::GetTimeUs() < m_sampling_next_start_us)
+  if (Common::Timer::NowUs() < m_sampling_next_start_us)
     return false;
 
   u64 wait_us =
       PERFORMANCE_SAMPLING_INTERVAL_SECS * 1000000 +
       Common::Random::GenerateValue<u64>() % (PERFORMANCE_SAMPLING_WAIT_TIME_JITTER_SECS * 1000000);
-  m_sampling_next_start_us = Common::Timer::GetTimeUs() + wait_us;
+  m_sampling_next_start_us = Common::Timer::NowUs() + wait_us;
   return true;
 }
 
@@ -245,13 +251,13 @@ void DolphinAnalytics::MakeBaseBuilder()
   Common::AnalyticsReportBuilder builder;
 
   // Version information.
-  builder.AddData("version-desc", Common::scm_desc_str);
-  builder.AddData("version-hash", Common::scm_rev_git_str);
-  builder.AddData("version-branch", Common::scm_branch_str);
-  builder.AddData("version-dist", Common::scm_distributor_str);
+  builder.AddData("version-desc", Common::GetScmDescStr());
+  builder.AddData("version-hash", Common::GetScmRevGitStr());
+  builder.AddData("version-branch", Common::GetScmBranchStr());
+  builder.AddData("version-dist", Common::GetScmDistributorStr());
 
   // Auto-Update information.
-  builder.AddData("update-track", SConfig::GetInstance().m_auto_update_track);
+  builder.AddData("update-track", Config::Get(Config::MAIN_AUTOUPDATE_UPDATE_TRACK));
 
   // CPU information.
   builder.AddData("cpu-summary", cpu_info.Summarize());
@@ -356,12 +362,12 @@ void DolphinAnalytics::MakePerGameBuilder()
   builder.AddData("cfg-dsp-hle", Config::Get(Config::MAIN_DSP_HLE));
   builder.AddData("cfg-dsp-jit", Config::Get(Config::MAIN_DSP_JIT));
   builder.AddData("cfg-dsp-thread", Config::Get(Config::MAIN_DSP_THREAD));
-  builder.AddData("cfg-cpu-thread", SConfig::GetInstance().bCPUThread);
-  builder.AddData("cfg-fastmem", SConfig::GetInstance().bFastmem);
-  builder.AddData("cfg-syncgpu", SConfig::GetInstance().bSyncGPU);
+  builder.AddData("cfg-cpu-thread", Config::Get(Config::MAIN_CPU_THREAD));
+  builder.AddData("cfg-fastmem", Config::Get(Config::MAIN_FASTMEM));
+  builder.AddData("cfg-syncgpu", Config::Get(Config::MAIN_SYNC_GPU));
   builder.AddData("cfg-audio-backend", Config::Get(Config::MAIN_AUDIO_BACKEND));
-  builder.AddData("cfg-oc-enable", SConfig::GetInstance().m_OCEnable);
-  builder.AddData("cfg-oc-factor", SConfig::GetInstance().m_OCFactor);
+  builder.AddData("cfg-oc-enable", Config::Get(Config::MAIN_OVERCLOCK_ENABLE));
+  builder.AddData("cfg-oc-factor", Config::Get(Config::MAIN_OVERCLOCK));
   builder.AddData("cfg-render-to-main", Config::Get(Config::MAIN_RENDER_TO_MAIN));
   if (g_video_backend)
   {
@@ -403,7 +409,6 @@ void DolphinAnalytics::MakePerGameBuilder()
                   g_Config.backend_info.bSupportsExclusiveFullscreen);
   builder.AddData("gpu-has-dual-source-blend", g_Config.backend_info.bSupportsDualSourceBlend);
   builder.AddData("gpu-has-primitive-restart", g_Config.backend_info.bSupportsPrimitiveRestart);
-  builder.AddData("gpu-has-oversized-viewports", g_Config.backend_info.bSupportsOversizedViewports);
   builder.AddData("gpu-has-geometry-shaders", g_Config.backend_info.bSupportsGeometryShaders);
   builder.AddData("gpu-has-3d-vision", g_Config.backend_info.bSupports3DVision);
   builder.AddData("gpu-has-early-z", g_Config.backend_info.bSupportsEarlyZ);
@@ -424,7 +429,7 @@ void DolphinAnalytics::MakePerGameBuilder()
   // Controller information
   // We grab enough to tell what percentage of our users are playing with keyboard/mouse, some kind
   // of gamepad
-  // or the official gamecube adapter.
+  // or the official GameCube adapter.
   builder.AddData("gcadapter-detected", GCAdapter::IsDetected(nullptr));
   builder.AddData("has-controller", Pad::GetConfig()->IsControllerControlledByGamepadDevice(0) ||
                                         GCAdapter::IsDetected(nullptr));

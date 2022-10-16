@@ -4,7 +4,6 @@
 #include "VideoBackends/OGL/OGLRender.h"
 
 #include <algorithm>
-#include <cinttypes>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -483,6 +482,10 @@ Renderer::Renderer(std::unique_ptr<GLContext> main_gl_context, float backbuffer_
       GLExtensions::Supports("GL_EXT_texture_compression_s3tc");
   g_Config.backend_info.bSupportsBPTCTextures =
       GLExtensions::Supports("GL_ARB_texture_compression_bptc");
+  g_Config.backend_info.bSupportsCoarseDerivatives =
+      GLExtensions::Supports("GL_ARB_derivative_control") || GLExtensions::Version() >= 450;
+  g_Config.backend_info.bSupportsTextureQueryLevels =
+      GLExtensions::Supports("GL_ARB_texture_query_levels") || GLExtensions::Version() >= 430;
 
   if (m_main_gl_context->IsGLES())
   {
@@ -508,6 +511,9 @@ Renderer::Renderer(std::unique_ptr<GLContext> main_gl_context, float backbuffer_
     // glReadPixels() can't be used with non-color formats. But, if we support
     // ARB_get_texture_sub_image (unlikely, except maybe on NVIDIA), we can use that instead.
     g_Config.backend_info.bSupportsDepthReadback = g_ogl_config.bSupportsTextureSubImage;
+
+    // GL_TEXTURE_LOD_BIAS is not supported on GLES.
+    g_Config.backend_info.bSupportsLodBiasInSampler = false;
 
     if (GLExtensions::Supports("GL_EXT_shader_framebuffer_fetch"))
     {
@@ -577,6 +583,7 @@ Renderer::Renderer(std::unique_ptr<GLContext> main_gl_context, float backbuffer_
       g_ogl_config.bSupports3DTextureStorageMultisample = true;
       g_Config.backend_info.bSupportsBitfield = true;
       g_Config.backend_info.bSupportsDynamicSamplerIndexing = true;
+      g_Config.backend_info.bSupportsSettingObjectNames = true;
     }
   }
   else
@@ -622,6 +629,7 @@ Renderer::Renderer(std::unique_ptr<GLContext> main_gl_context, float backbuffer_
       g_ogl_config.bSupportsTextureStorage = true;
       g_ogl_config.bSupportsImageLoadStore = true;
       g_Config.backend_info.bSupportsSSAA = true;
+      g_Config.backend_info.bSupportsSettingObjectNames = true;
 
       // Compute shaders are core in GL4.3.
       g_Config.backend_info.bSupportsComputeShaders = true;
@@ -743,6 +751,8 @@ Renderer::Renderer(std::unique_ptr<GLContext> main_gl_context, float backbuffer_
     OSD::AddMessage("This device's performance may be poor.", 60000);
   }
 
+  INFO_LOG_FMT(VIDEO, "Video Info: {}, {}, {}", g_ogl_config.gl_vendor, g_ogl_config.gl_renderer,
+               g_ogl_config.gl_version);
   WARN_LOG_FMT(VIDEO, "Missing OGL Extensions: {}{}{}{}{}{}{}{}{}{}{}{}{}{}",
                g_ActiveConfig.backend_info.bSupportsDualSourceBlend ? "" : "DualSourceBlend ",
                g_ActiveConfig.backend_info.bSupportsPrimitiveRestart ? "" : "PrimitiveRestart ",
@@ -893,8 +903,8 @@ void Renderer::DrawIndexed(u32 base_index, u32 num_indices, u32 base_vertex)
   }
 }
 
-void Renderer::DispatchComputeShader(const AbstractShader* shader, u32 groups_x, u32 groups_y,
-                                     u32 groups_z)
+void Renderer::DispatchComputeShader(const AbstractShader* shader, u32 groupsize_x, u32 groupsize_y,
+                                     u32 groupsize_z, u32 groups_x, u32 groups_y, u32 groups_z)
 {
   glUseProgram(static_cast<const OGLShader*>(shader)->GetGLComputeProgramID());
   glDispatchCompute(groups_x, groups_y, groups_z);
@@ -948,7 +958,7 @@ void Renderer::ClearScreen(const MathUtil::Rectangle<int>& rc, bool colorEnable,
     glDepthMask(m_current_depth_state.updateenable);
 
   // Scissor rect must be restored.
-  BPFunctions::SetScissor();
+  BPFunctions::SetScissorAndViewport();
 }
 
 void Renderer::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
@@ -1158,55 +1168,43 @@ void Renderer::ApplyBlendingState(const BlendingState state)
   if (m_current_blend_state == state)
     return;
 
-  bool useDualSource =
-      state.usedualsrc && g_ActiveConfig.backend_info.bSupportsDualSourceBlend &&
-      (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_DUAL_SOURCE_BLENDING) || state.dstalpha);
-  // Only use shader blend if we need to and we don't support dual-source blending directly
-  bool useShaderBlend = !useDualSource && state.usedualsrc && state.dstalpha &&
-                        g_ActiveConfig.backend_info.bSupportsFramebufferFetch;
+  bool useDualSource = state.usedualsrc;
 
-  if (useShaderBlend)
-  {
-    glDisable(GL_BLEND);
-  }
+  const GLenum src_factors[8] = {GL_ZERO,
+                                 GL_ONE,
+                                 GL_DST_COLOR,
+                                 GL_ONE_MINUS_DST_COLOR,
+                                 useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
+                                 useDualSource ? GL_ONE_MINUS_SRC1_ALPHA :
+                                                 (GLenum)GL_ONE_MINUS_SRC_ALPHA,
+                                 GL_DST_ALPHA,
+                                 GL_ONE_MINUS_DST_ALPHA};
+  const GLenum dst_factors[8] = {GL_ZERO,
+                                 GL_ONE,
+                                 GL_SRC_COLOR,
+                                 GL_ONE_MINUS_SRC_COLOR,
+                                 useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
+                                 useDualSource ? GL_ONE_MINUS_SRC1_ALPHA :
+                                                 (GLenum)GL_ONE_MINUS_SRC_ALPHA,
+                                 GL_DST_ALPHA,
+                                 GL_ONE_MINUS_DST_ALPHA};
+
+  if (state.blendenable)
+    glEnable(GL_BLEND);
   else
-  {
-    const GLenum src_factors[8] = {GL_ZERO,
-                                   GL_ONE,
-                                   GL_DST_COLOR,
-                                   GL_ONE_MINUS_DST_COLOR,
-                                   useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
-                                   useDualSource ? GL_ONE_MINUS_SRC1_ALPHA :
-                                                   (GLenum)GL_ONE_MINUS_SRC_ALPHA,
-                                   GL_DST_ALPHA,
-                                   GL_ONE_MINUS_DST_ALPHA};
-    const GLenum dst_factors[8] = {GL_ZERO,
-                                   GL_ONE,
-                                   GL_SRC_COLOR,
-                                   GL_ONE_MINUS_SRC_COLOR,
-                                   useDualSource ? GL_SRC1_ALPHA : (GLenum)GL_SRC_ALPHA,
-                                   useDualSource ? GL_ONE_MINUS_SRC1_ALPHA :
-                                                   (GLenum)GL_ONE_MINUS_SRC_ALPHA,
-                                   GL_DST_ALPHA,
-                                   GL_ONE_MINUS_DST_ALPHA};
+    glDisable(GL_BLEND);
 
-    if (state.blendenable)
-      glEnable(GL_BLEND);
-    else
-      glDisable(GL_BLEND);
-
-    // Always call glBlendEquationSeparate and glBlendFuncSeparate, even when
-    // GL_BLEND is disabled, as a workaround for some bugs (possibly graphics
-    // driver issues?). See https://bugs.dolphin-emu.org/issues/10120 : "Sonic
-    // Adventure 2 Battle: graphics crash when loading first Dark level"
-    GLenum equation = state.subtract ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
-    GLenum equationAlpha = state.subtractAlpha ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
-    glBlendEquationSeparate(equation, equationAlpha);
-    glBlendFuncSeparate(src_factors[u32(state.srcfactor.Value())],
-                        dst_factors[u32(state.dstfactor.Value())],
-                        src_factors[u32(state.srcfactoralpha.Value())],
-                        dst_factors[u32(state.dstfactoralpha.Value())]);
-  }
+  // Always call glBlendEquationSeparate and glBlendFuncSeparate, even when
+  // GL_BLEND is disabled, as a workaround for some bugs (possibly graphics
+  // driver issues?). See https://bugs.dolphin-emu.org/issues/10120 : "Sonic
+  // Adventure 2 Battle: graphics crash when loading first Dark level"
+  GLenum equation = state.subtract ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
+  GLenum equationAlpha = state.subtractAlpha ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
+  glBlendEquationSeparate(equation, equationAlpha);
+  glBlendFuncSeparate(src_factors[u32(state.srcfactor.Value())],
+                      dst_factors[u32(state.dstfactor.Value())],
+                      src_factors[u32(state.srcfactoralpha.Value())],
+                      dst_factors[u32(state.dstfactoralpha.Value())]);
 
   const GLenum logic_op_codes[16] = {
       GL_CLEAR,         GL_AND,         GL_AND_REVERSE, GL_COPY,  GL_AND_INVERTED, GL_NOOP,

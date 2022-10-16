@@ -153,7 +153,7 @@ void DSPEmitter::FallBackToInterpreter(UDSPInstruction inst)
   const auto interpreter_function = Interpreter::GetOp(inst);
 
   m_gpr.PushRegs();
-  ASSERT_MSG(DSPLLE, interpreter_function != nullptr, "No function for %04x", inst);
+  ASSERT_MSG(DSPLLE, interpreter_function != nullptr, "No function for {:04x}", inst);
   ABI_CallFunctionPC(FallbackThunk, &m_dsp_core.GetInterpreter(), inst);
   m_gpr.PopRegs();
 }
@@ -443,7 +443,7 @@ void DSPEmitter::CompileDispatcher()
   }
 
   // Check for DSP halt
-  TEST(8, M_SDSP_cr(), Imm8(CR_HALT));
+  TEST(8, M_SDSP_control_reg(), Imm8(CR_HALT));
   FixupBranch _halt = J_CC(CC_NE);
 
   // Execute block. Cycles executed returned in EAX.
@@ -470,6 +470,10 @@ void DSPEmitter::CompileDispatcher()
   RET();
 }
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
 Gen::OpArg DSPEmitter::M_SDSP_pc()
 {
   return MDisp(R15, static_cast<int>(offsetof(SDSP, pc)));
@@ -480,9 +484,9 @@ Gen::OpArg DSPEmitter::M_SDSP_exceptions()
   return MDisp(R15, static_cast<int>(offsetof(SDSP, exceptions)));
 }
 
-Gen::OpArg DSPEmitter::M_SDSP_cr()
+Gen::OpArg DSPEmitter::M_SDSP_control_reg()
 {
-  return MDisp(R15, static_cast<int>(offsetof(SDSP, cr)));
+  return MDisp(R15, static_cast<int>(offsetof(SDSP, control_reg)));
 }
 
 Gen::OpArg DSPEmitter::M_SDSP_external_interrupt_waiting()
@@ -503,5 +507,8 @@ Gen::OpArg DSPEmitter::M_SDSP_reg_stack_ptrs(size_t index)
   return MDisp(R15, static_cast<int>(offsetof(SDSP, reg_stack_ptrs) +
                                      sizeof(SDSP::reg_stack_ptrs[0]) * index));
 }
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 }  // namespace DSP::JIT::x64

@@ -11,6 +11,7 @@
 #include "Common/MathUtil.h"
 #include "Core/ConfigManager.h"
 #include "Core/HW/WiimoteEmu/WiimoteEmu.h"
+#include "Core/System.h"
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
 #include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 
@@ -73,7 +74,7 @@ void stopdamnwav()
 void SpeakerLogic::SpeakerData(const u8* data, int length, float speaker_pan)
 {
   // TODO: should we still process samples for the decoder state?
-  if (!SConfig::GetInstance().m_WiimoteEnableSpeaker)
+  if (!m_speaker_enabled)
     return;
 
   if (reg_data.sample_rate == 0 || length == 0)
@@ -141,12 +142,15 @@ void SpeakerLogic::SpeakerData(const u8* data, int length, float speaker_pan)
   const u32 l_volume = std::min(u32(std::min(1.f - speaker_pan, 1.f) * volume), 255u);
   const u32 r_volume = std::min(u32(std::min(1.f + speaker_pan, 1.f) * volume), 255u);
 
-  g_sound_stream->GetMixer()->SetWiimoteSpeakerVolume(l_volume, r_volume);
+  auto& system = Core::System::GetInstance();
+  SoundStream* sound_stream = system.GetSoundStream();
+
+  sound_stream->GetMixer()->SetWiimoteSpeakerVolume(l_volume, r_volume);
 
   // ADPCM sample rate is thought to be x2.(3000 x2 = 6000).
   const unsigned int sample_rate = sample_rate_dividend / reg_data.sample_rate;
-  g_sound_stream->GetMixer()->PushWiimoteSpeakerSamples(samples.get(), sample_length,
-                                                        sample_rate * 2);
+  sound_stream->GetMixer()->PushWiimoteSpeakerSamples(
+      samples.get(), sample_length, Mixer::FIXED_SAMPLE_RATE_DIVIDEND / (sample_rate * 2));
 
 #ifdef WIIMOTE_SPEAKER_DUMP
   static int num = 0;
@@ -184,6 +188,11 @@ void SpeakerLogic::DoState(PointerWrap& p)
 {
   p.Do(adpcm_state);
   p.Do(reg_data);
+}
+
+void SpeakerLogic::SetSpeakerEnabled(bool enabled)
+{
+  m_speaker_enabled = enabled;
 }
 
 int SpeakerLogic::BusRead(u8 slave_addr, u8 addr, int count, u8* data_out)

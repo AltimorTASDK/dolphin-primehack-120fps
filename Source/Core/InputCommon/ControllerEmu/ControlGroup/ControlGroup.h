@@ -43,7 +43,8 @@ enum class GroupType
   IMUAccelerometer,
   IMUGyroscope,
   IMUCursor,
-  PrimeHack
+  PrimeHackMode,
+  PrimeHackAltProfile
 };
 
 class ControlGroup

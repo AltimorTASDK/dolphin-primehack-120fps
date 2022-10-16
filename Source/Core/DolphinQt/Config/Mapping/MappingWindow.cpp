@@ -15,6 +15,8 @@
 
 #include "Core/Core.h"
 #include "Core/HotkeyManager.h"
+#include "Core/HW/Wiimote.h"
+#include "Core/HW/WiimoteEmu/WiimoteEmu.h"
 
 #include "Common/CommonPaths.h"
 #include "Common/FileSearch.h"
@@ -50,11 +52,13 @@
 #include "DolphinQt/Config/Mapping/WiimoteEmuMotionControl.h"
 #include "DolphinQt/Config/Mapping/WiimoteEmuMotionControlIMU.h"
 #include "DolphinQt/QtUtils/ModalMessageBox.h"
+#include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 #include "DolphinQt/QtUtils/WindowActivationEventFilter.h"
 #include "DolphinQt/QtUtils/WrapInScrollArea.h"
 #include "DolphinQt/Settings.h"
 
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/ControllerEmu/ControlGroup/PrimeHackAltProfile.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/ControllerInterface/CoreDevice.h"
 #include "InputCommon/InputConfig.h"
@@ -99,7 +103,7 @@ void MappingWindow::CreateDevicesLayout()
   m_devices_layout = new QHBoxLayout();
   m_devices_box = new QGroupBox(tr("Device"));
   m_devices_combo = new QComboBox();
-  m_devices_refresh = new QPushButton(tr("Refresh"));
+  m_devices_refresh = new NonDefaultQPushButton(tr("Refresh"));
 
   m_devices_combo->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
   m_devices_refresh->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -115,9 +119,9 @@ void MappingWindow::CreateProfilesLayout()
   m_profiles_layout = new QHBoxLayout();
   m_profiles_box = new QGroupBox(tr("Profile"));
   m_profiles_combo = new QComboBox();
-  m_profiles_load = new QPushButton(tr("Load"));
-  m_profiles_save = new QPushButton(tr("Save"));
-  m_profiles_delete = new QPushButton(tr("Delete"));
+  m_profiles_load = new NonDefaultQPushButton(tr("Load"));
+  m_profiles_save = new NonDefaultQPushButton(tr("Save"));
+  m_profiles_delete = new NonDefaultQPushButton(tr("Delete"));
 
   auto* button_layout = new QHBoxLayout();
 
@@ -138,8 +142,8 @@ void MappingWindow::CreateResetLayout()
 {
   m_reset_layout = new QHBoxLayout();
   m_reset_box = new QGroupBox(tr("Reset"));
-  m_reset_clear = new QPushButton(tr("Clear"));
-  m_reset_default = new QPushButton(tr("Default"));
+  m_reset_clear = new NonDefaultQPushButton(tr("Clear"));
+  m_reset_default = new NonDefaultQPushButton(tr("Default"));
 
   m_reset_box->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
@@ -298,6 +302,7 @@ void MappingWindow::OnLoadProfilePressed()
 
   const auto lock = GetController()->GetStateLock();
   emit ConfigChanged();
+  emit ProfileLoaded();
 }
 
 void MappingWindow::OnSaveProfilePressed()
@@ -323,6 +328,8 @@ void MappingWindow::OnSaveProfilePressed()
     PopulateProfileSelection();
     m_profiles_combo->setCurrentIndex(m_profiles_combo->findText(profile_name));
   }
+  emit ConfigChanged();
+  emit ProfileSaved();
 }
 
 void MappingWindow::OnSelectDevice(int)

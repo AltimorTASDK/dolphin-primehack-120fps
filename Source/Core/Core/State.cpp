@@ -64,16 +64,17 @@ static AfterLoadCallbackFunc s_on_after_load_callback;
 // Temporary undo state buffer
 static std::vector<u8> g_undo_load_buffer;
 static std::vector<u8> g_current_buffer;
-static bool s_load_or_save_in_progress;
+static std::mutex s_load_or_save_in_progress_mutex;
 
 static std::mutex g_cs_undo_load_buffer;
 static std::mutex g_cs_current_buffer;
 static Common::Event g_compressAndDumpStateSyncEvent;
 
+static std::recursive_mutex g_save_thread_mutex;
 static std::thread g_save_thread;
 
 // Don't forget to increase this after doing changes on the savestate system
-constexpr u32 STATE_VERSION = 139;  // Last changed in PR 8350
+constexpr u32 STATE_VERSION = 149;  // Last changed in PR 10781
 
 // Maps savestate versions to Dolphin versions.
 // Versions after 42 don't need to be added to this list,
@@ -116,7 +117,7 @@ static bool DoStateVersion(PointerWrap& p, std::string* version_created_by)
     version = cookie - COOKIE_BASE;
   }
 
-  *version_created_by = Common::scm_rev_str;
+  *version_created_by = Common::GetScmRevStr();
   if (version > 42)
     p.Do(*version_created_by);
   else
@@ -155,7 +156,7 @@ static void DoState(PointerWrap& p)
             "This savestate was created using an incompatible version of Dolphin" :
             "This savestate was created using the incompatible version " + version_created_by;
     Core::DisplayMessage(message, OSD::Duration::NORMAL);
-    p.SetMode(PointerWrap::MODE_MEASURE);
+    p.SetMeasureMode();
     return;
   }
 
@@ -167,7 +168,7 @@ static void DoState(PointerWrap& p)
     OSD::AddMessage(fmt::format("Cannot load a savestate created under {} mode in {} mode",
                                 is_wii ? "Wii" : "GC", is_wii_currently ? "Wii" : "GC"),
                     OSD::Duration::NORMAL, OSD::Color::RED);
-    p.SetMode(PointerWrap::MODE_MEASURE);
+    p.SetMeasureMode();
     return;
   }
 
@@ -185,7 +186,7 @@ static void DoState(PointerWrap& p)
                                 Memory::GetExRamSizeReal(), Memory::GetExRamSizeReal() / 0x100000U,
                                 state_mem1_size, state_mem1_size / 0x100000U, state_mem2_size,
                                 state_mem2_size / 0x100000U));
-    p.SetMode(PointerWrap::MODE_MEASURE);
+    p.SetMeasureMode();
     return;
   }
 
@@ -224,8 +225,8 @@ void LoadFromBuffer(std::vector<u8>& buffer)
 
   Core::RunOnCPUThread(
       [&] {
-        u8* ptr = &buffer[0];
-        PointerWrap p(&ptr, PointerWrap::MODE_READ);
+        u8* ptr = buffer.data();
+        PointerWrap p(&ptr, buffer.size(), PointerWrap::Mode::Read);
         DoState(p);
       },
       true);
@@ -236,14 +237,14 @@ void SaveToBuffer(std::vector<u8>& buffer)
   Core::RunOnCPUThread(
       [&] {
         u8* ptr = nullptr;
-        PointerWrap p(&ptr, PointerWrap::MODE_MEASURE);
+        PointerWrap p_measure(&ptr, 0, PointerWrap::Mode::Measure);
 
-        DoState(p);
+        DoState(p_measure);
         const size_t buffer_size = reinterpret_cast<size_t>(ptr);
         buffer.resize(buffer_size);
 
-        ptr = &buffer[0];
-        p.SetMode(PointerWrap::MODE_WRITE);
+        ptr = buffer.data();
+        PointerWrap p(&ptr, buffer_size, PointerWrap::Mode::Write);
         DoState(p);
       },
       true);
@@ -269,6 +270,35 @@ static int GetEmptySlot(std::map<double, int> m)
   return -1;
 }
 
+// Arbitrarily chosen value (38 years) that is subtracted in GetSystemTimeAsDouble()
+// to increase sub-second precision of the resulting double timestamp
+static constexpr int DOUBLE_TIME_OFFSET = (38 * 365 * 24 * 60 * 60);
+
+static double GetSystemTimeAsDouble()
+{
+  const auto since_epoch = std::chrono::system_clock::now().time_since_epoch();
+
+  const auto since_double_time_epoch = since_epoch - std::chrono::seconds(DOUBLE_TIME_OFFSET);
+  return std::chrono::duration_cast<std::chrono::duration<double>>(since_double_time_epoch).count();
+}
+
+static std::string SystemTimeAsDoubleToString(double time)
+{
+  // revert adjustments from GetSystemTimeAsDouble() to get a normal Unix timestamp again
+  time_t seconds = (time_t)time + DOUBLE_TIME_OFFSET;
+  tm* localTime = localtime(&seconds);
+
+#ifdef _WIN32
+  wchar_t tmp[32] = {};
+  wcsftime(tmp, std::size(tmp), L"%x %X", localTime);
+  return WStringToUTF8(tmp);
+#else
+  char tmp[32] = {};
+  strftime(tmp, sizeof(tmp), "%x %X", localTime);
+  return tmp;
+#endif
+}
+
 static std::string MakeStateFilename(int number);
 
 // read state timestamps
@@ -283,7 +313,7 @@ static std::map<double, int> GetSavedStates()
     {
       if (ReadHeader(filename, header))
       {
-        double d = Common::Timer::GetDoubleTime() - header.time;
+        double d = GetSystemTimeAsDouble() - header.time;
 
         // increase time until unique value is obtained
         while (m.find(d) != m.end())
@@ -358,7 +388,7 @@ static void CompressAndDumpState(CompressAndDumpState_args save_args)
   StateHeader header{};
   SConfig::GetInstance().GetGameID().copy(header.gameID, std::size(header.gameID));
   header.size = s_use_compression ? (u32)buffer_size : 0;
-  header.time = Common::Timer::GetDoubleTime();
+  header.time = GetSystemTimeAsDouble();
 
   f.WriteArray(&header, 1);
 
@@ -403,29 +433,30 @@ static void CompressAndDumpState(CompressAndDumpState_args save_args)
 
 void SaveAs(const std::string& filename, bool wait)
 {
-  if (s_load_or_save_in_progress)
+  std::unique_lock lk(s_load_or_save_in_progress_mutex, std::try_to_lock);
+  if (!lk)
     return;
-
-  s_load_or_save_in_progress = true;
 
   Core::RunOnCPUThread(
       [&] {
         // Measure the size of the buffer.
         u8* ptr = nullptr;
-        PointerWrap p(&ptr, PointerWrap::MODE_MEASURE);
-        DoState(p);
+        PointerWrap p_measure(&ptr, 0, PointerWrap::Mode::Measure);
+        DoState(p_measure);
         const size_t buffer_size = reinterpret_cast<size_t>(ptr);
 
         // Then actually do the write.
+        bool is_write_mode;
         {
-          std::lock_guard lk(g_cs_current_buffer);
+          std::lock_guard lk2(g_cs_current_buffer);
           g_current_buffer.resize(buffer_size);
-          ptr = &g_current_buffer[0];
-          p.SetMode(PointerWrap::MODE_WRITE);
+          ptr = g_current_buffer.data();
+          PointerWrap p(&ptr, buffer_size, PointerWrap::Mode::Write);
           DoState(p);
+          is_write_mode = p.IsWriteMode();
         }
 
-        if (p.GetMode() == PointerWrap::MODE_WRITE)
+        if (is_write_mode)
         {
           Core::DisplayMessage("Saving State...", 1000);
 
@@ -435,8 +466,12 @@ void SaveAs(const std::string& filename, bool wait)
           save_args.filename = filename;
           save_args.wait = wait;
 
-          Flush();
-          g_save_thread = std::thread(CompressAndDumpState, save_args);
+          {
+            std::lock_guard lk3(g_save_thread_mutex);
+            Flush();
+            g_save_thread = std::thread(CompressAndDumpState, save_args);
+          }
+
           g_compressAndDumpStateSyncEvent.Wait();
         }
         else
@@ -446,8 +481,6 @@ void SaveAs(const std::string& filename, bool wait)
         }
       },
       true);
-
-  s_load_or_save_in_progress = false;
 }
 
 bool ReadHeader(const std::string& filename, StateHeader& header)
@@ -467,7 +500,7 @@ std::string GetInfoStringOfSlot(int slot, bool translate)
   if (!ReadHeader(filename, header))
     return translate ? Common::GetStringT("Unknown") : "Unknown";
 
-  return Common::Timer::GetDateTimeFormatted(header.time);
+  return SystemTimeAsDoubleToString(header.time);
 }
 
 u64 GetUnixTimeOfSlot(int slot)
@@ -477,8 +510,7 @@ u64 GetUnixTimeOfSlot(int slot)
     return 0;
 
   constexpr u64 MS_PER_SEC = 1000;
-  return static_cast<u64>(header.time * MS_PER_SEC) +
-         (Common::Timer::DOUBLE_TIME_OFFSET * MS_PER_SEC);
+  return static_cast<u64>(header.time * MS_PER_SEC) + (DOUBLE_TIME_OFFSET * MS_PER_SEC);
 }
 
 static void LoadFileStateData(const std::string& filename, std::vector<u8>& ret_data)
@@ -550,24 +582,25 @@ static void LoadFileStateData(const std::string& filename, std::vector<u8>& ret_
 
 void LoadAs(const std::string& filename)
 {
-  if (!Core::IsRunning() || s_load_or_save_in_progress)
-  {
+  if (!Core::IsRunning())
     return;
-  }
-  else if (NetPlay::IsNetPlayRunning())
+
+  if (NetPlay::IsNetPlayRunning())
   {
     OSD::AddMessage("Loading savestates is disabled in Netplay to prevent desyncs");
     return;
   }
 
-  s_load_or_save_in_progress = true;
+  std::unique_lock lk(s_load_or_save_in_progress_mutex, std::try_to_lock);
+  if (!lk)
+    return;
 
   Core::RunOnCPUThread(
       [&] {
         // Save temp buffer for undo load state
         if (!Movie::IsJustStartingRecordingInputFromSaveState())
         {
-          std::lock_guard lk(g_cs_undo_load_buffer);
+          std::lock_guard lk2(g_cs_undo_load_buffer);
           SaveToBuffer(g_undo_load_buffer);
           if (Movie::IsMovieActive())
             Movie::SaveRecording(File::GetUserPath(D_STATESAVES_IDX) + "undo.dtm");
@@ -585,11 +618,11 @@ void LoadAs(const std::string& filename)
 
           if (!buffer.empty())
           {
-            u8* ptr = &buffer[0];
-            PointerWrap p(&ptr, PointerWrap::MODE_READ);
+            u8* ptr = buffer.data();
+            PointerWrap p(&ptr, buffer.size(), PointerWrap::Mode::Read);
             DoState(p);
             loaded = true;
-            loadedSuccessfully = (p.GetMode() == PointerWrap::MODE_READ);
+            loadedSuccessfully = p.IsReadMode();
           }
         }
 
@@ -617,8 +650,6 @@ void LoadAs(const std::string& filename)
           s_on_after_load_callback();
       },
       true);
-
-  s_load_or_save_in_progress = false;
 }
 
 void SetOnAfterLoadCallback(AfterLoadCallbackFunc callback)
@@ -699,6 +730,8 @@ void SaveFirstSaved()
 
 void Flush()
 {
+  std::lock_guard lk(g_save_thread_mutex);
+
   // If already saving state, wait for it to finish
   if (g_save_thread.joinable())
     g_save_thread.join();

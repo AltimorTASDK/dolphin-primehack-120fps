@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cinttypes>
 #include <deque>
 #include <map>
 #include <memory>
@@ -64,7 +63,6 @@ static std::unique_ptr<EmulationKernel> s_ios;
 
 constexpr u64 ENQUEUE_REQUEST_FLAG = 0x100000000ULL;
 static CoreTiming::EventType* s_event_enqueue;
-static CoreTiming::EventType* s_event_sdio_notify;
 static CoreTiming::EventType* s_event_finish_ppc_bootstrap;
 static CoreTiming::EventType* s_event_finish_ios_boot;
 
@@ -265,7 +263,7 @@ void WriteReturnValue(s32 value, u32 address)
   Memory::Write_U32(static_cast<u32>(value), address);
 }
 
-Kernel::Kernel()
+Kernel::Kernel(IOSC::ConsoleType console_type) : m_iosc(console_type)
 {
   // Until the Wii root and NAND path stuff is entirely managed by IOS and made non-static,
   // using more than one IOS instance at a time is not supported.
@@ -515,7 +513,7 @@ void Kernel::AddStaticDevices()
 
   // OH1 (Bluetooth)
   AddDevice(std::make_unique<DeviceStub>(*this, "/dev/usb/oh1"));
-  if (!SConfig::GetInstance().m_bt_passthrough_enabled)
+  if (!Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_ENABLED))
     AddDevice(std::make_unique<BluetoothEmuDevice>(*this, "/dev/usb/oh1/57e/305"));
   else
     AddDevice(std::make_unique<BluetoothRealDevice>(*this, "/dev/usb/oh1/57e/305"));
@@ -659,7 +657,7 @@ std::optional<IPCReply> Kernel::HandleIPCCommand(const Request& request)
     return IPCReply{IPC_EINVAL, 550_tbticks};
 
   std::optional<IPCReply> ret;
-  const u64 wall_time_before = Common::Timer::GetTimeUs();
+  const u64 wall_time_before = Common::Timer::NowUs();
 
   switch (request.command)
   {
@@ -683,12 +681,12 @@ std::optional<IPCReply> Kernel::HandleIPCCommand(const Request& request)
     ret = device->IOCtlV(IOCtlVRequest{request.address});
     break;
   default:
-    ASSERT_MSG(IOS, false, "Unexpected command: %x", request.command);
+    ASSERT_MSG(IOS, false, "Unexpected command: {:#x}", request.command);
     ret = IPCReply{IPC_EINVAL, 978_tbticks};
     break;
   }
 
-  const u64 wall_time_after = Common::Timer::GetTimeUs();
+  const u64 wall_time_after = Common::Timer::NowUs();
   constexpr u64 BLOCKING_IPC_COMMAND_THRESHOLD_US = 2000;
   if (wall_time_after - wall_time_before > BLOCKING_IPC_COMMAND_THRESHOLD_US)
   {
@@ -790,14 +788,6 @@ void Kernel::UpdateWantDeterminism(const bool new_want_determinism)
     device.second->UpdateWantDeterminism(new_want_determinism);
 }
 
-void Kernel::SDIO_EventNotify()
-{
-  // TODO: Potential race condition: If IsRunning() becomes false after
-  // it's checked, an event may be scheduled after CoreTiming shuts down.
-  if (SConfig::GetInstance().bWii && Core::IsRunning())
-    CoreTiming::ScheduleEvent(0, s_event_sdio_notify, 0, CoreTiming::FromThread::NON_CPU);
-}
-
 void Kernel::DoState(PointerWrap& p)
 {
   p.Do(m_request_queue);
@@ -817,7 +807,7 @@ void Kernel::DoState(PointerWrap& p)
   for (const auto& entry : m_device_map)
     entry.second->DoState(p);
 
-  if (p.GetMode() == PointerWrap::MODE_READ)
+  if (p.IsReadMode())
   {
     for (u32 i = 0; i < IPC_MAX_FDS; i++)
     {
@@ -885,16 +875,6 @@ void Init()
   s_event_enqueue = CoreTiming::RegisterEvent("IPCEvent", [](u64 userdata, s64) {
     if (s_ios)
       s_ios->HandleIPCEvent(userdata);
-  });
-
-  s_event_sdio_notify = CoreTiming::RegisterEvent("SDIO_EventNotify", [](u64, s64) {
-    if (!s_ios)
-      return;
-
-    auto sdio_slot0 = s_ios->GetDeviceByName("/dev/sdio/slot0");
-    auto device = static_cast<SDIOSlot0Device*>(sdio_slot0.get());
-    if (device)
-      device->EventNotify();
   });
 
   ESDevice::InitializeEmulationState();

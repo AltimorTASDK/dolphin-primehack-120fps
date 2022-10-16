@@ -24,7 +24,7 @@
 #include "Common/Network.h"
 #include "Common/StringUtil.h"
 #include "Common/Swap.h"
-#include "Core/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
 #include "Core/IOS/Device.h"
@@ -38,8 +38,8 @@ constexpr u8 REQUEST_TYPE = static_cast<u8>(LIBUSB_ENDPOINT_OUT) |
 
 static bool IsWantedDevice(const libusb_device_descriptor& descriptor)
 {
-  const int vid = SConfig::GetInstance().m_bt_passthrough_vid;
-  const int pid = SConfig::GetInstance().m_bt_passthrough_pid;
+  const int vid = Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_VID);
+  const int pid = Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_PID);
   if (vid == -1 || pid == -1)
     return true;
   return descriptor.idVendor == vid && descriptor.idProduct == pid;
@@ -49,9 +49,11 @@ static bool IsBluetoothDevice(const libusb_interface_descriptor& descriptor)
 {
   constexpr u8 SUBCLASS = 0x01;
   constexpr u8 PROTOCOL_BLUETOOTH = 0x01;
-  if (SConfig::GetInstance().m_bt_passthrough_vid != -1 &&
-      SConfig::GetInstance().m_bt_passthrough_pid != -1)
+  if (Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_VID) != -1 &&
+      Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_PID) != -1)
+  {
     return true;
+  }
   return descriptor.bInterfaceClass == LIBUSB_CLASS_WIRELESS &&
          descriptor.bInterfaceSubClass == SUBCLASS &&
          descriptor.bInterfaceProtocol == PROTOCOL_BLUETOOTH;
@@ -69,7 +71,9 @@ BluetoothRealDevice::~BluetoothRealDevice()
   {
     SendHCIResetCommand();
     WaitForHCICommandComplete(HCI_CMD_RESET);
-    libusb_release_interface(m_handle, 0);
+    const int ret = libusb_release_interface(m_handle, 0);
+    if (ret != LIBUSB_SUCCESS)
+      WARN_LOG_FMT(IOS_WIIMOTE, "libusb_release_interface failed: {}", LibusbUtils::ErrorWrap(ret));
     libusb_close(m_handle);
     libusb_unref_device(m_device);
   }
@@ -82,14 +86,16 @@ std::optional<IPCReply> BluetoothRealDevice::Open(const OpenRequest& request)
     return IPCReply(IPC_EACCES);
 
   m_last_open_error.clear();
-  m_context.GetDeviceList([this](libusb_device* device) {
+  const int ret = m_context.GetDeviceList([this](libusb_device* device) {
     libusb_device_descriptor device_descriptor;
     libusb_get_device_descriptor(device, &device_descriptor);
-    auto config_descriptor = LibusbUtils::MakeConfigDescriptor(device);
-    if (!config_descriptor)
+    auto [make_config_descriptor_ret, config_descriptor] =
+        LibusbUtils::MakeConfigDescriptor(device);
+    if (make_config_descriptor_ret != LIBUSB_SUCCESS || !config_descriptor)
     {
-      ERROR_LOG_FMT(IOS_WIIMOTE, "Failed to get config descriptor for device {:04x}:{:04x}",
-                    device_descriptor.idVendor, device_descriptor.idProduct);
+      ERROR_LOG_FMT(IOS_WIIMOTE, "Failed to get config descriptor for device {:04x}:{:04x}: {}",
+                    device_descriptor.idVendor, device_descriptor.idProduct,
+                    LibusbUtils::ErrorWrap(make_config_descriptor_ret));
       return true;
     }
 
@@ -98,21 +104,60 @@ std::optional<IPCReply> BluetoothRealDevice::Open(const OpenRequest& request)
     if (IsBluetoothDevice(descriptor) && IsWantedDevice(device_descriptor) && OpenDevice(device))
     {
       unsigned char manufacturer[50] = {}, product[50] = {}, serial_number[50] = {};
-      libusb_get_string_descriptor_ascii(m_handle, device_descriptor.iManufacturer, manufacturer,
-                                         sizeof(manufacturer));
-      libusb_get_string_descriptor_ascii(m_handle, device_descriptor.iProduct, product,
-                                         sizeof(product));
-      libusb_get_string_descriptor_ascii(m_handle, device_descriptor.iSerialNumber, serial_number,
-                                         sizeof(serial_number));
+      const int manufacturer_ret = libusb_get_string_descriptor_ascii(
+          m_handle, device_descriptor.iManufacturer, manufacturer, sizeof(manufacturer));
+      if (manufacturer_ret < LIBUSB_SUCCESS)
+      {
+        WARN_LOG_FMT(IOS_WIIMOTE,
+                     "Failed to get string for manufacturer descriptor {:02x} for device "
+                     "{:04x}:{:04x} (rev {:x}): {}",
+                     device_descriptor.iManufacturer, device_descriptor.idVendor,
+                     device_descriptor.idProduct, device_descriptor.bcdDevice,
+                     LibusbUtils::ErrorWrap(manufacturer_ret));
+        manufacturer[0] = '?';
+        manufacturer[1] = '\0';
+      }
+      const int product_ret = libusb_get_string_descriptor_ascii(
+          m_handle, device_descriptor.iProduct, product, sizeof(product));
+      if (product_ret < LIBUSB_SUCCESS)
+      {
+        WARN_LOG_FMT(IOS_WIIMOTE,
+                     "Failed to get string for product descriptor {:02x} for device "
+                     "{:04x}:{:04x} (rev {:x}): {}",
+                     device_descriptor.iProduct, device_descriptor.idVendor,
+                     device_descriptor.idProduct, device_descriptor.bcdDevice,
+                     LibusbUtils::ErrorWrap(product_ret));
+        product[0] = '?';
+        product[1] = '\0';
+      }
+      const int serial_ret = libusb_get_string_descriptor_ascii(
+          m_handle, device_descriptor.iSerialNumber, serial_number, sizeof(serial_number));
+      if (serial_ret < LIBUSB_SUCCESS)
+      {
+        WARN_LOG_FMT(IOS_WIIMOTE,
+                     "Failed to get string for serial number descriptor {:02x} for device "
+                     "{:04x}:{:04x} (rev {:x}): {}",
+                     device_descriptor.iSerialNumber, device_descriptor.idVendor,
+                     device_descriptor.idProduct, device_descriptor.bcdDevice,
+                     LibusbUtils::ErrorWrap(serial_ret));
+        serial_number[0] = '?';
+        serial_number[1] = '\0';
+      }
       NOTICE_LOG_FMT(IOS_WIIMOTE, "Using device {:04x}:{:04x} (rev {:x}) for Bluetooth: {} {} {}",
                      device_descriptor.idVendor, device_descriptor.idProduct,
-                     device_descriptor.bcdDevice, manufacturer, product, serial_number);
+                     device_descriptor.bcdDevice, reinterpret_cast<char*>(manufacturer),
+                     reinterpret_cast<char*>(product), reinterpret_cast<char*>(serial_number));
       m_is_wii_bt_module =
           device_descriptor.idVendor == 0x57e && device_descriptor.idProduct == 0x305;
       return false;
     }
     return true;
   });
+  if (ret != LIBUSB_SUCCESS)
+  {
+    m_last_open_error =
+        Common::FmtFormatT("GetDeviceList failed: {0}", LibusbUtils::ErrorWrap(ret));
+  }
 
   if (m_handle == nullptr)
   {
@@ -141,7 +186,9 @@ std::optional<IPCReply> BluetoothRealDevice::Close(u32 fd)
 {
   if (m_handle)
   {
-    libusb_release_interface(m_handle, 0);
+    const int ret = libusb_release_interface(m_handle, 0);
+    if (ret != LIBUSB_SUCCESS)
+      WARN_LOG_FMT(IOS_WIIMOTE, "libusb_release_interface failed: {}", LibusbUtils::ErrorWrap(ret));
     libusb_close(m_handle);
     libusb_unref_device(m_device);
     m_handle = nullptr;
@@ -202,7 +249,9 @@ std::optional<IPCReply> BluetoothRealDevice::IOCtlV(const IOCtlVRequest& request
     };
     PendingTransfer pending_transfer{std::move(cmd), std::move(buffer)};
     m_current_transfers.emplace(transfer, std::move(pending_transfer));
-    libusb_submit_transfer(transfer);
+    const int ret = libusb_submit_transfer(transfer);
+    if (ret != LIBUSB_SUCCESS)
+      WARN_LOG_FMT(IOS_WIIMOTE, "libusb_submit_transfer failed: {}", LibusbUtils::ErrorWrap(ret));
     break;
   }
   // ACL data (incoming or outgoing) and incoming HCI events (respectively)
@@ -252,7 +301,9 @@ std::optional<IPCReply> BluetoothRealDevice::IOCtlV(const IOCtlVRequest& request
     transfer->user_data = this;
     PendingTransfer pending_transfer{std::move(cmd), std::move(buffer)};
     m_current_transfers.emplace(transfer, std::move(pending_transfer));
-    libusb_submit_transfer(transfer);
+    const int ret = libusb_submit_transfer(transfer);
+    if (ret != LIBUSB_SUCCESS)
+      WARN_LOG_FMT(IOS_WIIMOTE, "libusb_submit_transfer failed: {}", LibusbUtils::ErrorWrap(ret));
     break;
   }
   }
@@ -265,28 +316,28 @@ void BluetoothRealDevice::DoState(PointerWrap& p)
 {
   bool passthrough_bluetooth = true;
   p.Do(passthrough_bluetooth);
-  if (!passthrough_bluetooth && p.GetMode() == PointerWrap::MODE_READ)
+  if (!passthrough_bluetooth && p.IsReadMode())
   {
     Core::DisplayMessage("State needs Bluetooth passthrough to be disabled. Aborting load.", 4000);
-    p.SetMode(PointerWrap::MODE_VERIFY);
+    p.SetVerifyMode();
     return;
   }
 
   // Prevent the transfer callbacks from messing with m_current_transfers after we have started
   // writing a savestate. We cannot use a scoped lock here because DoState is called twice and
   // we would lose the lock between the two calls.
-  if (p.GetMode() == PointerWrap::MODE_MEASURE || p.GetMode() == PointerWrap::MODE_VERIFY)
+  if (p.IsMeasureMode() || p.IsVerifyMode())
     m_transfers_mutex.lock();
 
   std::vector<u32> addresses_to_discard;
-  if (p.GetMode() != PointerWrap::MODE_READ)
+  if (!p.IsReadMode())
   {
     // Save addresses of transfer commands to discard on savestate load.
     for (const auto& transfer : m_current_transfers)
       addresses_to_discard.push_back(transfer.second.command->ios_request.address);
   }
   p.Do(addresses_to_discard);
-  if (p.GetMode() == PointerWrap::MODE_READ)
+  if (p.IsReadMode())
   {
     // On load, discard any pending transfer to make sure the emulated software is not stuck
     // waiting for the previous request to complete. This is usually not an issue as long as
@@ -302,7 +353,7 @@ void BluetoothRealDevice::DoState(PointerWrap& p)
                     OSD::Duration::NORMAL);
   }
 
-  if (!s_has_shown_savestate_warning && p.GetMode() == PointerWrap::MODE_WRITE)
+  if (!s_has_shown_savestate_warning && p.IsWriteMode())
   {
     OSD::AddMessage("Savestates may not work with Bluetooth passthrough in all cases.\n"
                     "They will only work if no remote is connected when restoring the state,\n"
@@ -312,7 +363,7 @@ void BluetoothRealDevice::DoState(PointerWrap& p)
   }
 
   // We have finished the savestate now, so the transfers mutex can be unlocked.
-  if (p.GetMode() == PointerWrap::MODE_WRITE)
+  if (p.IsWriteMode())
     m_transfers_mutex.unlock();
 }
 
@@ -320,12 +371,12 @@ void BluetoothRealDevice::UpdateSyncButtonState(const bool is_held)
 {
   if (m_sync_button_state == SyncButtonState::Unpressed && is_held)
   {
-    m_sync_button_held_timer.Update();
+    m_sync_button_held_timer.Start();
     m_sync_button_state = SyncButtonState::Held;
   }
 
   if (m_sync_button_state == SyncButtonState::Held && is_held &&
-      m_sync_button_held_timer.GetTimeDifference() > SYNC_BUTTON_HOLD_MS_TO_RESET)
+      m_sync_button_held_timer.ElapsedMs() > SYNC_BUTTON_HOLD_MS_TO_RESET)
     m_sync_button_state = SyncButtonState::LongPressed;
   else if (m_sync_button_state == SyncButtonState::Held && !is_held)
     m_sync_button_state = SyncButtonState::Pressed;
@@ -354,7 +405,7 @@ void BluetoothRealDevice::WaitForHCICommandComplete(const u16 opcode)
   {
     const int ret = libusb_interrupt_transfer(m_handle, HCI_EVENT, buffer.data(),
                                               static_cast<int>(buffer.size()), &actual_length, 20);
-    if (ret != 0 || actual_length < static_cast<int>(sizeof(packet)))
+    if (ret != LIBUSB_SUCCESS || actual_length < static_cast<int>(sizeof(packet)))
       continue;
     std::memcpy(&packet, buffer.data(), sizeof(packet));
     if (packet.EventType == HCI_EVENT_COMMAND_COMPL && packet.Opcode == opcode)
@@ -367,8 +418,12 @@ void BluetoothRealDevice::SendHCIResetCommand()
   u8 packet[3] = {};
   const u16 payload[] = {HCI_CMD_RESET};
   memcpy(packet, payload, sizeof(payload));
-  libusb_control_transfer(m_handle, REQUEST_TYPE, 0, 0, 0, packet, sizeof(packet), TIMEOUT);
-  INFO_LOG_FMT(IOS_WIIMOTE, "Sent a reset command to adapter");
+  const int ret =
+      libusb_control_transfer(m_handle, REQUEST_TYPE, 0, 0, 0, packet, sizeof(packet), TIMEOUT);
+  if (ret < LIBUSB_SUCCESS)
+    WARN_LOG_FMT(IOS_WIIMOTE, "libusb_control_transfer failed: {}", LibusbUtils::ErrorWrap(ret));
+  else
+    INFO_LOG_FMT(IOS_WIIMOTE, "Sent a reset command to adapter");
 }
 
 void BluetoothRealDevice::SendHCIDeleteLinkKeyCommand()
@@ -384,8 +439,11 @@ void BluetoothRealDevice::SendHCIDeleteLinkKeyCommand()
   payload.command.bdaddr = {};
   payload.command.delete_all = true;
 
-  libusb_control_transfer(m_handle, REQUEST_TYPE, 0, 0, 0, reinterpret_cast<u8*>(&payload),
-                          static_cast<u16>(sizeof(payload)), TIMEOUT);
+  const int ret =
+      libusb_control_transfer(m_handle, REQUEST_TYPE, 0, 0, 0, reinterpret_cast<u8*>(&payload),
+                              static_cast<u16>(sizeof(payload)), TIMEOUT);
+  if (ret < LIBUSB_SUCCESS)
+    WARN_LOG_FMT(IOS_WIIMOTE, "libusb_control_transfer failed: {}", LibusbUtils::ErrorWrap(ret));
 }
 
 bool BluetoothRealDevice::SendHCIStoreLinkKeyCommand()
@@ -422,8 +480,10 @@ bool BluetoothRealDevice::SendHCIStoreLinkKeyCommand()
     iterator += entry.second.size();
   }
 
-  libusb_control_transfer(m_handle, REQUEST_TYPE, 0, 0, 0, packet.data(),
-                          static_cast<u16>(packet.size()), TIMEOUT);
+  const int ret = libusb_control_transfer(m_handle, REQUEST_TYPE, 0, 0, 0, packet.data(),
+                                          static_cast<u16>(packet.size()), TIMEOUT);
+  if (ret < LIBUSB_SUCCESS)
+    WARN_LOG_FMT(IOS_WIIMOTE, "libusb_control_transfer failed: {}", LibusbUtils::ErrorWrap(ret));
   return true;
 }
 
@@ -499,7 +559,7 @@ void BluetoothRealDevice::FakeSyncButtonHeldEvent(USB::V0IntrMessage& ctrl)
 
 void BluetoothRealDevice::LoadLinkKeys()
 {
-  const std::string& entries = SConfig::GetInstance().m_bt_passthrough_link_keys;
+  std::string entries = Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_LINK_KEYS);
   if (entries.empty())
     return;
   for (const auto& pair : SplitString(entries, ','))
@@ -546,24 +606,27 @@ void BluetoothRealDevice::SaveLinkKeys()
     oss << Common::MacAddressToString(address);
     oss << '=';
     oss << std::hex;
-    for (const u16& data : entry.second)
-      oss << std::setfill('0') << std::setw(2) << data;
+    for (u8 data : entry.second)
+    {
+      // We cast to u16 here in order to have it displayed as two nibbles.
+      oss << std::setfill('0') << std::setw(2) << static_cast<u16>(data);
+    }
     oss << std::dec << ',';
   }
   std::string config_string = oss.str();
   if (!config_string.empty())
     config_string.pop_back();
-  SConfig::GetInstance().m_bt_passthrough_link_keys = config_string;
+  Config::SetBase(Config::MAIN_BLUETOOTH_PASSTHROUGH_LINK_KEYS, config_string);
 }
 
 bool BluetoothRealDevice::OpenDevice(libusb_device* device)
 {
   m_device = libusb_ref_device(device);
   const int ret = libusb_open(m_device, &m_handle);
-  if (ret != 0)
+  if (ret != LIBUSB_SUCCESS)
   {
     m_last_open_error =
-        Common::FmtFormatT("Failed to open Bluetooth device: {0}", libusb_error_name(ret));
+        Common::FmtFormatT("Failed to open Bluetooth device: {0}", LibusbUtils::ErrorWrap(ret));
     return false;
   }
 
@@ -571,20 +634,22 @@ bool BluetoothRealDevice::OpenDevice(libusb_device* device)
 // https://lists.freebsd.org/pipermail/freebsd-usb/2016-March/014161.html
 #ifndef __FreeBSD__
   int result = libusb_set_auto_detach_kernel_driver(m_handle, 1);
-  if (result != 0)
+  if (result != LIBUSB_SUCCESS)
   {
     result = libusb_detach_kernel_driver(m_handle, INTERFACE);
-    if (result < 0 && result != LIBUSB_ERROR_NOT_FOUND && result != LIBUSB_ERROR_NOT_SUPPORTED)
+    if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_NOT_FOUND &&
+        result != LIBUSB_ERROR_NOT_SUPPORTED)
     {
       m_last_open_error = Common::FmtFormatT(
-          "Failed to detach kernel driver for BT passthrough: {0}", libusb_error_name(result));
+          "Failed to detach kernel driver for BT passthrough: {0}", LibusbUtils::ErrorWrap(result));
       return false;
     }
   }
 #endif
-  if (libusb_claim_interface(m_handle, INTERFACE) < 0)
+  if (const int result2 = libusb_claim_interface(m_handle, INTERFACE); result2 != LIBUSB_SUCCESS)
   {
-    m_last_open_error = Common::GetStringT("Failed to claim interface for BT passthrough");
+    m_last_open_error = Common::FmtFormatT("Failed to claim interface for BT passthrough: {0}",
+                                           LibusbUtils::ErrorWrap(result2));
     return false;
   }
 

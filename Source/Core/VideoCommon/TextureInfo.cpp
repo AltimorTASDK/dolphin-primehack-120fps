@@ -9,7 +9,6 @@
 #include "Common/Align.h"
 #include "Core/HW/Memmap.h"
 #include "VideoCommon/BPMemory.h"
-#include "VideoCommon/SamplerCommon.h"
 #include "VideoCommon/TextureDecoder.h"
 
 TextureInfo TextureInfo::FromStage(u32 stage)
@@ -28,7 +27,7 @@ TextureInfo TextureInfo::FromStage(u32 stage)
   const u8* tlut_ptr = &texMem[tlutaddr];
 
   std::optional<u32> mip_count;
-  const bool has_mipmaps = SamplerCommon::AreBpTexMode0MipmapsEnabled(tex.texMode0);
+  const bool has_mipmaps = tex.texMode0.mipmap_filter != MipMode::None;
   if (has_mipmaps)
   {
     mip_count = (tex.texMode1.max_lod + 0xf) / 0x10;
@@ -40,22 +39,22 @@ TextureInfo TextureInfo::FromStage(u32 stage)
 
   if (from_tmem)
   {
-    return TextureInfo(&texMem[tmem_address_even], tlut_ptr, address, texture_format, tlut_format,
-                       width, height, true, &texMem[tmem_address_odd], &texMem[tmem_address_even],
-                       mip_count);
+    return TextureInfo(stage, &texMem[tmem_address_even], tlut_ptr, address, texture_format,
+                       tlut_format, width, height, true, &texMem[tmem_address_odd],
+                       &texMem[tmem_address_even], mip_count);
   }
 
-  return TextureInfo(Memory::GetPointer(address), tlut_ptr, address, texture_format, tlut_format,
-                     width, height, false, nullptr, nullptr, mip_count);
+  return TextureInfo(stage, Memory::GetPointer(address), tlut_ptr, address, texture_format,
+                     tlut_format, width, height, false, nullptr, nullptr, mip_count);
 }
 
-TextureInfo::TextureInfo(const u8* ptr, const u8* tlut_ptr, u32 address,
+TextureInfo::TextureInfo(u32 stage, const u8* ptr, const u8* tlut_ptr, u32 address,
                          TextureFormat texture_format, TLUTFormat tlut_format, u32 width,
                          u32 height, bool from_tmem, const u8* tmem_odd, const u8* tmem_even,
                          std::optional<u32> mip_count)
     : m_ptr(ptr), m_tlut_ptr(tlut_ptr), m_address(address), m_from_tmem(from_tmem),
       m_tmem_odd(tmem_odd), m_texture_format(texture_format), m_tlut_format(tlut_format),
-      m_raw_width(width), m_raw_height(height)
+      m_raw_width(width), m_raw_height(height), m_stage(stage)
 {
   const bool is_palette_texture = IsColorIndexed(m_texture_format);
   if (is_palette_texture)
@@ -101,7 +100,7 @@ std::string TextureInfo::NameDetails::GetFullName() const
   return fmt::format("{}_{}{}_{}", base_name, texture_name, tlut_name, format_name);
 }
 
-TextureInfo::NameDetails TextureInfo::CalculateTextureName()
+TextureInfo::NameDetails TextureInfo::CalculateTextureName() const
 {
   if (!m_ptr)
     return NameDetails{};
@@ -239,6 +238,11 @@ u32 TextureInfo::GetRawWidth() const
 u32 TextureInfo::GetRawHeight() const
 {
   return m_raw_height;
+}
+
+u32 TextureInfo::GetStage() const
+{
+  return m_stage;
 }
 
 bool TextureInfo::HasMipMaps() const

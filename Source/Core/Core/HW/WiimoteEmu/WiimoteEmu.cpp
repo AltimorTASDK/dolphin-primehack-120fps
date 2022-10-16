@@ -17,8 +17,7 @@
 #include "Common/MathUtil.h"
 #include "Common/MsgHandler.h"
 
-#include "Core/Config/SYSCONFSettings.h"
-#include "Core/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/Wiimote.h"
 #include "Core/Movie.h"
@@ -39,6 +38,7 @@
 #include "InputCommon/ControllerEmu/Control/Output.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
 #include "InputCommon/ControllerEmu/ControlGroup/PrimeHackModes.h"
+#include "InputCommon/ControllerEmu/ControlGroup/PrimeHackAltProfile.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Buttons.h"
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Cursor.h"
@@ -343,6 +343,9 @@ Wiimote::Wiimote(const unsigned int index) : m_index(index)
   m_primehack_visors->AddSetting(
     &m_primehack_visor_menu, {"Enable Visor Menu", nullptr, nullptr, _trans("Enable Visor Menu")}, false);
 
+  groups.emplace_back(m_primehack_altprofile_controls =
+                          new ControllerEmu::PrimeHackAltProfile(_trans("PrimeHack"), ""));
+
   groups.emplace_back(m_primehack_camera = new ControllerEmu::ControlGroup(_trans("PrimeHack")));
 
   m_primehack_camera->AddSetting(
@@ -356,6 +359,9 @@ Wiimote::Wiimote(const unsigned int index) : m_index(index)
 
   m_primehack_camera->AddSetting(
     &m_primehack_movereticle, {"Control Reticle When Locked-On", nullptr, nullptr, _trans("Control Reticle When Locked-On")}, false);
+  m_primehack_camera->AddSetting(
+    &m_primehack_remap_map_controls,
+    {"Rotate Map with Mouse", nullptr, nullptr, _trans("Rotate Map with Mouse")}, true);
 
   m_primehack_camera->AddSetting(
       &m_primehack_camera_sensitivity,
@@ -390,6 +396,14 @@ Wiimote::Wiimote(const unsigned int index) : m_index(index)
     &m_primehack_improved_motions, {"Improved Motion Controls", nullptr, nullptr, _trans("Improved Motion Controls")}, true);
 
   Reset();
+
+  m_config_changed_callback_id = Config::AddConfigChangedCallback([this] { RefreshConfig(); });
+  RefreshConfig();
+}
+
+Wiimote::~Wiimote()
+{
+  Config::RemoveConfigChangedCallback(m_config_changed_callback_id);
 }
 
 void Wiimote::ChangeUIPrimeHack(bool useMetroidUI)
@@ -475,6 +489,8 @@ ControllerEmu::ControlGroup* Wiimote::GetWiimoteGroup(WiimoteGroup group) const
     return m_primehack_stick;
   case WiimoteGroup::Modes:
     return m_primehack_modes;
+  case WiimoteGroup::AltProfileControls:
+    return m_primehack_altprofile_controls;
   default:
     ASSERT(false);
     return nullptr;
@@ -821,14 +837,15 @@ bool Wiimote::PrimeControllerMode()
   return m_primehack_modes->GetSelectedDevice() == 1;
 }
 
-std::tuple<double, double, bool, bool, bool, bool> Wiimote::GetPrimeSettings()
+std::tuple<double, double, bool, bool, bool, bool, bool> Wiimote::GetPrimeSettings()
 {
   std::tuple t =
       std::make_tuple(m_primehack_camera_sensitivity.GetValue(),
                       m_primehack_cursor_sensitivity.GetValue(),
                       m_primehack_invert_x.GetValue(), m_primehack_invert_y.GetValue(),
                       m_primehack_scalesens.GetValue(),
-                      m_primehack_movereticle.GetValue());
+                      m_primehack_movereticle.GetValue(),
+                      m_primehack_remap_map_controls.GetValue());
 
   return t;
 }
@@ -837,31 +854,18 @@ void Wiimote::LoadDefaults(const ControllerInterface& ciface)
 {
   EmulatedController::LoadDefaults(ciface);
 
-  // Fire
-#if defined HAVE_X11 && HAVE_X11
-  m_buttons->SetControlExpression(0, "`Click 1` | RETURN");
+#ifdef _WIN32
+  m_buttons->SetControlExpression(0, "`Click 0` | RETURN"); // Fire
+  m_buttons->SetControlExpression(1, "SPACE"); // Jump
+  m_buttons->SetControlExpression(2, "TAB"); // Map
+  m_buttons->SetControlExpression(3, "GRAVE"); // Pause Menu
 #else
-  m_buttons->SetControlExpression(0, "`Click 0` | RETURN");
+  m_buttons->SetControlExpression(0, "`Click 1` | RETURN"); // Fire
+  m_buttons->SetControlExpression(1, "space"); // Jump
+  m_buttons->SetControlExpression(2, "Tab"); // Map
+  m_buttons->SetControlExpression(3, "`grave`"); // Pause Menu
 #endif
 
-  // Jump
-  // Map screen
-#if defined HAVE_X11 && HAVE_X11
-  m_buttons->SetControlExpression(1, "Space");
-
-  m_buttons->SetControlExpression(2, "Tab");
-#else
-  m_buttons->SetControlExpression(1, "SPACE");
-
-  m_buttons->SetControlExpression(2, "TAB");
-#endif
-
-  // Pause menu
-#if defined HAVE_X11 && HAVE_X11
-  m_buttons->SetControlExpression(3, "`dead_grave`");
-#else
-  m_buttons->SetControlExpression(3, "GRAVE");
-#endif
   // +-
   m_buttons->SetControlExpression(4, "E");
   m_buttons->SetControlExpression(5, "R");
@@ -936,6 +940,11 @@ void Wiimote::SetRumble(bool on)
 {
   const auto lock = GetStateLock();
   m_rumble->controls.front()->control_ref->State(on);
+}
+
+void Wiimote::RefreshConfig()
+{
+  m_speaker_logic.SetSpeakerEnabled(Config::Get(Config::MAIN_WIIMOTE_ENABLE_SPEAKER));
 }
 
 void Wiimote::StepDynamics()

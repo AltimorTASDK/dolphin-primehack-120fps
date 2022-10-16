@@ -110,7 +110,7 @@ void WriteReturnValue(s32 value, u32 address);
 class Kernel
 {
 public:
-  Kernel();
+  explicit Kernel(IOSC::ConsoleType console_type = IOSC::ConsoleType::Retail);
   virtual ~Kernel();
 
   void DoState(PointerWrap& p);
@@ -124,8 +124,6 @@ public:
   std::shared_ptr<FS::FileSystem> GetFS();
   std::shared_ptr<FSDevice> GetFSDevice();
   std::shared_ptr<ESDevice> GetES();
-
-  void SDIO_EventNotify();
 
   void EnqueueIPCRequest(u32 address);
   void EnqueueIPCReply(const Request& request, s32 return_value, s64 cycles_in_future = 0,

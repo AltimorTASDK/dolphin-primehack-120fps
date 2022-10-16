@@ -1,6 +1,8 @@
 // Copyright 2015 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "InputCommon/ControllerInterface/evdev/evdev.h"
+
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -20,7 +22,6 @@
 #include "Common/StringUtil.h"
 #include "Common/Thread.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
-#include "InputCommon/ControllerInterface/evdev/evdev.h"
 
 namespace ciface::evdev
 {
@@ -51,7 +52,7 @@ protected:
   {
     if (const char* code_name = libevdev_event_code_get_name(EV_KEY, m_code))
     {
-      const auto name = StripSpaces(code_name);
+      const auto name = StripWhitespace(code_name);
 
       for (auto remove_prefix : {"BTN_", "KEY_"})
       {
@@ -295,7 +296,7 @@ static void HotplugThreadFunc()
   udev* const udev = udev_new();
   Common::ScopeGuard udev_guard([udev] { udev_unref(udev); });
 
-  ASSERT_MSG(PAD, udev != nullptr, "Couldn't initialize libudev.");
+  ASSERT_MSG(CONTROLLERINTERFACE, udev != nullptr, "Couldn't initialize libudev.");
 
   // Set up monitoring
   udev_monitor* const monitor = udev_monitor_new_from_netlink(udev, "udev");
@@ -365,7 +366,7 @@ static void StartHotplugThread()
   }
 
   s_wakeup_eventfd = eventfd(0, 0);
-  ASSERT_MSG(PAD, s_wakeup_eventfd != -1, "Couldn't create eventfd.");
+  ASSERT_MSG(CONTROLLERINTERFACE, s_wakeup_eventfd != -1, "Couldn't create eventfd.");
   s_hotplug_thread = std::thread(HotplugThreadFunc);
 }
 
@@ -405,7 +406,7 @@ void PopulateDevices()
   // this ever changes, hopefully udev will take care of this.
 
   udev* const udev = udev_new();
-  ASSERT_MSG(PAD, udev != nullptr, "Couldn't initialize libudev.");
+  ASSERT_MSG(CONTROLLERINTERFACE, udev != nullptr, "Couldn't initialize libudev.");
 
   // List all input devices
   udev_enumerate* const enumerate = udev_enumerate_new(udev);
@@ -440,7 +441,7 @@ bool evdevDevice::AddNode(std::string devnode, int fd, libevdev* dev)
   m_nodes.emplace_back(Node{std::move(devnode), fd, dev});
 
   // Take on the alphabetically first name.
-  const auto potential_new_name = StripSpaces(libevdev_get_name(dev));
+  const auto potential_new_name = StripWhitespace(libevdev_get_name(dev));
   if (m_name.empty() || potential_new_name < m_name)
     m_name = potential_new_name;
 

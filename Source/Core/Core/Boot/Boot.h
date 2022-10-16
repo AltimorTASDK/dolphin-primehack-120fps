@@ -24,6 +24,11 @@ namespace File
 class IOFile;
 }
 
+namespace IOS::HLE::FS
+{
+class FileSystem;
+}
+
 struct RegionSetting
 {
   std::string area;
@@ -33,6 +38,58 @@ struct RegionSetting
 };
 
 class BootExecutableReader;
+
+namespace NetPlay
+{
+struct NetSettings;
+}
+
+enum class DeleteSavestateAfterBoot : u8
+{
+  No,
+  Yes
+};
+
+class BootSessionData
+{
+public:
+  BootSessionData();
+  BootSessionData(std::optional<std::string> savestate_path,
+                  DeleteSavestateAfterBoot delete_savestate);
+  BootSessionData(const BootSessionData& other) = delete;
+  BootSessionData(BootSessionData&& other);
+  BootSessionData& operator=(const BootSessionData& other) = delete;
+  BootSessionData& operator=(BootSessionData&& other);
+  ~BootSessionData();
+
+  const std::optional<std::string>& GetSavestatePath() const;
+  DeleteSavestateAfterBoot GetDeleteSavestate() const;
+  void SetSavestateData(std::optional<std::string> savestate_path,
+                        DeleteSavestateAfterBoot delete_savestate);
+
+  using WiiSyncCleanupFunction = std::function<void()>;
+
+  IOS::HLE::FS::FileSystem* GetWiiSyncFS() const;
+  const std::vector<u64>& GetWiiSyncTitles() const;
+  const std::string& GetWiiSyncRedirectFolder() const;
+  void InvokeWiiSyncCleanup() const;
+  void SetWiiSyncData(std::unique_ptr<IOS::HLE::FS::FileSystem> fs, std::vector<u64> titles,
+                      std::string redirect_folder, WiiSyncCleanupFunction cleanup);
+
+  const NetPlay::NetSettings* GetNetplaySettings() const;
+  void SetNetplaySettings(std::unique_ptr<NetPlay::NetSettings> netplay_settings);
+
+private:
+  std::optional<std::string> m_savestate_path;
+  DeleteSavestateAfterBoot m_delete_savestate = DeleteSavestateAfterBoot::No;
+
+  std::unique_ptr<IOS::HLE::FS::FileSystem> m_wii_sync_fs;
+  std::vector<u64> m_wii_sync_titles;
+  std::string m_wii_sync_redirect_folder;
+  WiiSyncCleanupFunction m_wii_sync_cleanup;
+
+  std::unique_ptr<NetPlay::NetSettings> m_netplay_settings;
+};
 
 struct BootParameters
 {
@@ -70,18 +127,17 @@ struct BootParameters
   };
 
   static std::unique_ptr<BootParameters>
-  GenerateFromFile(std::string boot_path, const std::optional<std::string>& savestate_path = {});
+  GenerateFromFile(std::string boot_path, BootSessionData boot_session_data_ = BootSessionData());
   static std::unique_ptr<BootParameters>
   GenerateFromFile(std::vector<std::string> paths,
-                   const std::optional<std::string>& savestate_path = {});
+                   BootSessionData boot_session_data_ = BootSessionData());
 
   using Parameters = std::variant<Disc, Executable, DiscIO::VolumeWAD, NANDTitle, IPL, DFF>;
-  BootParameters(Parameters&& parameters_, const std::optional<std::string>& savestate_path_ = {});
+  BootParameters(Parameters&& parameters_, BootSessionData boot_session_data_ = BootSessionData());
 
   Parameters parameters;
   std::vector<DiscIO::Riivolution::Patch> riivolution_patches;
-  std::optional<std::string> savestate_path;
-  bool delete_savestate = false;
+  BootSessionData boot_session_data;
 };
 
 class CBoot
@@ -114,6 +170,7 @@ private:
   static bool BootNANDTitle(u64 title_id);
 
   static void SetupMSR();
+  static void SetupHID(bool is_wii);
   static void SetupBAT(bool is_wii);
   static bool RunApploader(bool is_wii, const DiscIO::VolumeDisc& volume,
                            const std::vector<DiscIO::Riivolution::Patch>& riivolution_patches);

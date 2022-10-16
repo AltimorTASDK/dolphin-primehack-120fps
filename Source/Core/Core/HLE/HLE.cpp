@@ -58,7 +58,7 @@ constexpr std::array<Hook, 23> os_patches{{
 
     {"GeckoCodehandler",             HLE_Misc::GeckoCodeHandlerICacheFlush, HookType::Start,   HookFlag::Fixed},
     {"GeckoHandlerReturnTrampoline", HLE_Misc::GeckoReturnTrampoline,       HookType::Replace, HookFlag::Fixed},
-    {"AppLoaderReport",              HLE_OS::HLE_GeneralDebugPrint,         HookType::Replace, HookFlag::Fixed} // apploader needs OSReport-like function
+    {"AppLoaderReport",              HLE_OS::HLE_GeneralDebugPrint,         HookType::Start,   HookFlag::Fixed} // apploader needs OSReport-like function
 }};
 // clang-format on
 
@@ -189,7 +189,7 @@ HookFlag GetHookFlagsByIndex(u32 index)
 
 bool IsEnabled(HookFlag flag)
 {
-  return flag != HLE::HookFlag::Debug || SConfig::GetInstance().bEnableDebugging ||
+  return flag != HLE::HookFlag::Debug || Config::Get(Config::MAIN_ENABLE_DEBUGGING) ||
          PowerPC::GetMode() == PowerPC::CoreMode::Interpreter;
 }
 

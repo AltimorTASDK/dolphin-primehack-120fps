@@ -16,6 +16,7 @@
 
 #include "Core/Boot/Boot.h"
 #include "Core/CommonTitles.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/HLE/HLE.h"
@@ -35,6 +36,10 @@
 #include "DiscIO/Enums.h"
 #include "DiscIO/RiivolutionPatcher.h"
 #include "DiscIO/VolumeDisc.h"
+
+#include "VideoCommon/VertexManagerBase.h"
+#include "VideoCommon/VertexShaderManager.h"
+#include "VideoCommon/XFMemory.h"
 
 namespace
 {
@@ -60,10 +65,44 @@ void CBoot::RunFunction(u32 address)
 
 void CBoot::SetupMSR()
 {
-  MSR.FP = 1;
+  // 0x0002032
+  MSR.RI = 1;
   MSR.DR = 1;
   MSR.IR = 1;
-  MSR.EE = 1;
+  MSR.FP = 1;
+}
+
+void CBoot::SetupHID(bool is_wii)
+{
+  // HID0 is 0x0011c464 on GC, 0x0011c664 on Wii
+  HID0.BHT = 1;
+  HID0.BTIC = 1;
+  HID0.DCFA = 1;
+  if (is_wii)
+    HID0.SPD = 1;
+  HID0.DCFI = 1;
+  HID0.DCE = 1;
+  // Note that Datel titles will fail to boot if the instruction cache is not enabled; see
+  // https://bugs.dolphin-emu.org/issues/8223
+  HID0.ICE = 1;
+  HID0.NHR = 1;
+  HID0.DPM = 1;
+
+  // HID1 is initialized in PowerPC.cpp to 0x80000000
+  // HID2 is 0xe0000000
+  HID2.PSE = 1;
+  HID2.WPE = 1;
+  HID2.LSQE = 1;
+
+  // HID4 is 0 on GC and 0x83900000 on Wii
+  if (is_wii)
+  {
+    HID4.L2CFI = 1;
+    HID4.LPE = 1;
+    HID4.ST0 = 1;
+    HID4.SBE = 1;
+    HID4.reserved_3 = 1;
+  }
 }
 
 void CBoot::SetupBAT(bool is_wii)
@@ -109,7 +148,7 @@ bool CBoot::RunApploader(bool is_wii, const DiscIO::VolumeDisc& volume,
   // TODO - Make Apploader(or just RunFunction()) debuggable!!!
 
   // Call iAppLoaderEntry.
-  DEBUG_LOG_FMT(MASTER_LOG, "Call iAppLoaderEntry");
+  DEBUG_LOG_FMT(BOOT, "Call iAppLoaderEntry");
   const u32 iAppLoaderFuncAddr = is_wii ? 0x80004000 : 0x80003100;
   PowerPC::ppcState.gpr[3] = iAppLoaderFuncAddr + 0;
   PowerPC::ppcState.gpr[4] = iAppLoaderFuncAddr + 4;
@@ -120,15 +159,16 @@ bool CBoot::RunApploader(bool is_wii, const DiscIO::VolumeDisc& volume,
   const u32 iAppLoaderClose = PowerPC::Read_U32(iAppLoaderFuncAddr + 8);
 
   // iAppLoaderInit
-  DEBUG_LOG_FMT(MASTER_LOG, "Call iAppLoaderInit");
-  HLE::Patch(0x81300000, "AppLoaderReport");  // HLE OSReport for Apploader
+  DEBUG_LOG_FMT(BOOT, "Call iAppLoaderInit");
+  PowerPC::HostWrite_U32(0x4E800020, 0x81300000);  // Write BLR
+  HLE::Patch(0x81300000, "AppLoaderReport");       // HLE OSReport for Apploader
   PowerPC::ppcState.gpr[3] = 0x81300000;
   RunFunction(iAppLoaderInit);
 
   // iAppLoaderMain - Here we load the apploader, the DOL (the exe) and the FST (filesystem).
   // To give you an idea about where the stuff is located on the disc take a look at yagcd
   // ch 13.
-  DEBUG_LOG_FMT(MASTER_LOG, "Call iAppLoaderMain");
+  DEBUG_LOG_FMT(BOOT, "Call iAppLoaderMain");
 
   PowerPC::ppcState.gpr[3] = 0x81300004;
   PowerPC::ppcState.gpr[4] = 0x81300008;
@@ -146,7 +186,7 @@ bool CBoot::RunApploader(bool is_wii, const DiscIO::VolumeDisc& volume,
     const u32 length = PowerPC::Read_U32(0x81300008);
     const u32 dvd_offset = PowerPC::Read_U32(0x8130000c) << (is_wii ? 2 : 0);
 
-    INFO_LOG_FMT(MASTER_LOG, "DVDRead: offset: {:08x}   memOffset: {:08x}   length: {}", dvd_offset,
+    INFO_LOG_FMT(BOOT, "DVDRead: offset: {:08x}   memOffset: {:08x}   length: {}", dvd_offset,
                  ram_address, length);
     DVDRead(volume, dvd_offset, ram_address, length, partition);
 
@@ -160,7 +200,7 @@ bool CBoot::RunApploader(bool is_wii, const DiscIO::VolumeDisc& volume,
   }
 
   // iAppLoaderClose
-  DEBUG_LOG_FMT(MASTER_LOG, "call iAppLoaderClose");
+  DEBUG_LOG_FMT(BOOT, "call iAppLoaderClose");
   RunFunction(iAppLoaderClose);
   HLE::UnPatch("AppLoaderReport");
 
@@ -193,7 +233,7 @@ void CBoot::SetupGCMemory()
   PowerPC::HostWrite_U32(0x09a7ec80, 0x800000F8);  // Bus Clock Speed
   PowerPC::HostWrite_U32(0x1cf7c580, 0x800000FC);  // CPU Clock Speed
 
-  PowerPC::HostWrite_U32(0x4c000064, 0x80000300);  // Write default DFI Handler:     rfi
+  PowerPC::HostWrite_U32(0x4c000064, 0x80000300);  // Write default DSI Handler:     rfi
   PowerPC::HostWrite_U32(0x4c000064, 0x80000800);  // Write default FPU Handler:     rfi
   PowerPC::HostWrite_U32(0x4c000064, 0x80000C00);  // Write default Syscall Handler: rfi
 
@@ -213,9 +253,21 @@ bool CBoot::EmulatedBS2_GC(const DiscIO::VolumeDisc& volume,
   INFO_LOG_FMT(BOOT, "Faking GC BS2...");
 
   SetupMSR();
+  SetupHID(/*is_wii*/ false);
   SetupBAT(/*is_wii*/ false);
 
   SetupGCMemory();
+
+  // Datel titles don't initialize the postMatrices, but they have dual-texture coordinate
+  // transformation enabled. We initialize all of xfmem to 0, which results in everything using
+  // a texture coordinate of (0, 0), breaking textures. Normally the IPL will initialize the last
+  // entry to the identity matrix, but the whole point of BS2 EMU is that it skips the IPL, so we
+  // need to do this initialization ourselves.
+  xfmem.postMatrices[0x3d * 4 + 0] = 1.0f;
+  xfmem.postMatrices[0x3e * 4 + 1] = 1.0f;
+  xfmem.postMatrices[0x3f * 4 + 2] = 1.0f;
+  g_vertex_manager->Flush();
+  VertexShaderManager::InvalidateXFRange(XFMEM_POSTMATRICES + 0x3d * 4, XFMEM_POSTMATRICES_END);
 
   DVDReadDiscID(volume, 0x00000000);
 
@@ -301,7 +353,7 @@ bool CBoot::SetupWiiMemory(IOS::HLE::IOSC::ConsoleType console_type)
       model = gen.GetValue("MODEL");
 
       bool region_matches = false;
-      if (SConfig::GetInstance().bOverrideRegionSettings)
+      if (Config::Get(Config::MAIN_OVERRIDE_REGION_SETTINGS))
       {
         region_matches = true;
       }
@@ -461,8 +513,13 @@ bool CBoot::EmulatedBS2_Wii(const DiscIO::VolumeDisc& volume,
     state->discstate = 0x01;
   });
 
-  // The system menu clears the RTC flags
-  ExpansionInterface::g_rtc_flags.m_hex = 0;
+  // The system menu clears the RTC flags.
+  // However, the system menu also updates the disc cache when this happens; see
+  // https://wiibrew.org/wiki/MX23L4005#DI and
+  // https://wiibrew.org/wiki//title/00000001/00000002/data/cache.dat for details. If we clear the
+  // RTC flags, then the system menu thinks the disc cache is up to date, and will show the wrong
+  // disc in the disc channel (and reboot the first time the disc is opened)
+  // ExpansionInterface::g_rtc_flags.m_hex = 0;
 
   // While reading a disc, the system menu reads the first partition table
   // (0x20 bytes from 0x00040020) and stores a pointer to the data partition entry.
@@ -472,8 +529,11 @@ bool CBoot::EmulatedBS2_Wii(const DiscIO::VolumeDisc& volume,
   Memory::Write_U32(0, 0x3194);
   Memory::Write_U32(static_cast<u32>(data_partition.offset >> 2), 0x3198);
 
+  const s32 ios_override = Config::Get(Config::MAIN_OVERRIDE_BOOT_IOS);
+  const u64 ios = ios_override >= 0 ? Titles::IOS(static_cast<u32>(ios_override)) : tmd.GetIOSId();
+
   const auto console_type = volume.GetTicket(data_partition).GetConsoleType();
-  if (!SetupWiiMemory(console_type) || !IOS::HLE::GetIOS()->BootIOS(tmd.GetIOSId()))
+  if (!SetupWiiMemory(console_type) || !IOS::HLE::GetIOS()->BootIOS(ios))
     return false;
 
   auto di =
@@ -491,6 +551,7 @@ bool CBoot::EmulatedBS2_Wii(const DiscIO::VolumeDisc& volume,
   DVDRead(volume, 0, 0x3180, 4, partition);
 
   SetupMSR();
+  SetupHID(/*is_wii*/ true);
   SetupBAT(/*is_wii*/ true);
 
   Memory::Write_U32(0x4c000064, 0x00000300);  // Write default DSI Handler:   rfi

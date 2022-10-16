@@ -23,6 +23,8 @@ public:
   StateData GetState() const;
 
 private:
+  Control* GetModifierInput() const override;
+
   std::unique_ptr<StickGate> m_stick_gate;
 };
 
@@ -34,9 +36,11 @@ public:
   OctagonAnalogStick(const char* name, const char* ui_name, ControlState gate_radius);
 
   ControlState GetVirtualNotchSize() const override;
+  ControlState GetGateRadiusAtAngle(double ang) const override;
 
 private:
   SettingValue<double> m_virtual_notch_setting;
+  SettingValue<double> m_gate_size_setting;
 };
 
 }  // namespace ControllerEmu

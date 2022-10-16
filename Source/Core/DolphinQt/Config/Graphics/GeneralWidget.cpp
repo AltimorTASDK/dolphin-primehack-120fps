@@ -1,4 +1,4 @@
-// Copyright 2017 Dolphin Emulator Project5~5~5~
+// Copyright 2017 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "DolphinQt/Config/Graphics/GeneralWidget.h"
@@ -41,8 +41,9 @@ GeneralWidget::GeneralWidget(X11Utils::XRRConfiguration* xrr_config, GraphicsWin
   emit BackendChanged(QString::fromStdString(Config::Get(Config::MAIN_GFX_BACKEND)));
 
   connect(parent, &GraphicsWindow::BackendChanged, this, &GeneralWidget::OnBackendChanged);
-  connect(&Settings::Instance(), &Settings::EmulationStateChanged, this,
-          [=](Core::State state) { OnEmulationStateChanged(state != Core::State::Uninitialized); });
+  connect(&Settings::Instance(), &Settings::EmulationStateChanged, this, [this](Core::State state) {
+    OnEmulationStateChanged(state != Core::State::Uninitialized);
+  });
   OnEmulationStateChanged(Core::GetState() != Core::State::Uninitialized);
 }
 
@@ -142,9 +143,10 @@ void GeneralWidget::ConnectWidgets()
   // Video Backend
   connect(m_backend_combo, qOverload<int>(&QComboBox::currentIndexChanged), this,
           &GeneralWidget::SaveSettings);
-  connect(m_adapter_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [](int index) {
+  connect(m_adapter_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [&](int index) {
     g_Config.iAdapter = index;
     Config::SetBaseOrCurrent(Config::GFX_ADAPTER, index);
+    emit BackendChanged(QString::fromStdString(Config::Get(Config::MAIN_GFX_BACKEND)));
   });
 }
 

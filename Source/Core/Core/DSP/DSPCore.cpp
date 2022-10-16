@@ -73,9 +73,9 @@ static bool VerifyRoms(const SDSP& dsp)
   if (rom_idx < 0)
   {
     if (AskYesNoFmtT("Your DSP ROMs have incorrect hashes.\n\n"
-                     "Delete the dsp_rom.bin and dsp_coef.bin files in the GC folder in the Global "
-                     "User Directory to use the free DSP ROM, or replace them with good dumps from "
-                     "a real GameCube/Wii.\n\n"
+                     "Delete the dsp_rom.bin and dsp_coef.bin files in the GC folder in the User "
+                     "folder to use the free DSP ROM, or replace them with good dumps from a real "
+                     "GameCube/Wii.\n\n"
                      "Would you like to stop now to fix the problem?\n"
                      "If you select \"No\", audio might be garbled."))
     {
@@ -88,9 +88,9 @@ static bool VerifyRoms(const SDSP& dsp)
     if (AskYesNoFmtT(
             "You are using an old free DSP ROM made by the Dolphin Team.\n"
             "Due to emulation accuracy improvements, this ROM no longer works correctly.\n\n"
-            "Delete the dsp_rom.bin and dsp_coef.bin files in the GC folder in the Global "
-            "User Directory to use the most recent free DSP ROM, or replace them with "
-            "good dumps from a real GameCube/Wii.\n\n"
+            "Delete the dsp_rom.bin and dsp_coef.bin files in the GC folder in the User folder "
+            "to use the most recent free DSP ROM, or replace them with good dumps from a real "
+            "GameCube/Wii.\n\n"
             "Would you like to stop now to fix the problem?\n"
             "If you select \"No\", audio might be garbled."))
     {
@@ -161,7 +161,7 @@ bool SDSP::Initialize(const DSPInitOptions& opts)
   r.sr |= SR_INT_ENABLE;
   r.sr |= SR_EXT_INT_ENABLE;
 
-  cr = CR_INIT | CR_HALT;
+  control_reg = CR_INIT | CR_HALT;
   InitializeIFX();
   // Mostly keep IRAM write protected. We unprotect only when DMA-ing
   // in new ucodes.
@@ -210,7 +210,7 @@ void SDSP::CheckExternalInterrupt()
   // Signal the SPU about new mail
   SetException(ExceptionType::ExternalInterrupt);
 
-  cr &= ~CR_EXTERNAL_INT;
+  control_reg &= ~CR_EXTERNAL_INT;
 }
 
 void SDSP::CheckExceptions()
@@ -300,7 +300,7 @@ u16 SDSP::ReadRegister(size_t reg) const
   case DSP_REG_ACM1:
     return r.ac[reg - DSP_REG_ACM0].m;
   default:
-    ASSERT_MSG(DSP_CORE, 0, "cannot happen");
+    ASSERT_MSG(DSPLLE, 0, "cannot happen");
     return 0;
   }
 }
@@ -378,7 +378,8 @@ void SDSP::DoState(PointerWrap& p)
 {
   p.Do(r);
   p.Do(pc);
-  p.Do(cr);
+  p.Do(control_reg);
+  p.Do(control_reg_init_code_clear_time);
   p.Do(reg_stack_ptrs);
   p.Do(exceptions);
   p.Do(external_interrupt_waiting);
@@ -398,7 +399,7 @@ void SDSP::DoState(PointerWrap& p)
   Common::WriteProtectMemory(iram, DSP_IRAM_BYTE_SIZE, false);
   // TODO: This uses the wrong endianness (producing bad disassembly)
   // and a bogus byte count (producing bad hashes)
-  if (p.GetMode() == PointerWrap::MODE_READ)
+  if (p.IsReadMode())
     Host::CodeLoaded(m_dsp_core, reinterpret_cast<const u8*>(iram), DSP_IRAM_BYTE_SIZE);
   p.DoArray(dram, DSP_DRAM_SIZE);
 }

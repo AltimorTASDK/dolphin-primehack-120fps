@@ -118,6 +118,11 @@ GCPad::GCPad(const unsigned int index) : m_index(index)
     &m_primehack_camera_sensitivity,
     {"Camera Sensitivity", nullptr, nullptr, _trans("Camera Sensitivity")}, 15, 1, 100);
 
+  m_primehack_camera->AddSetting(
+    &m_primehack_remap_map_controls,
+    {"Rotate Map with Mouse", nullptr, nullptr, _trans("Rotate Map with Mouse")}, false
+);
+
   constexpr auto gate_radius = ControlState(STICK_GATE_RADIUS) / STICK_RADIUS;
   groups.emplace_back(m_primehack_stick =
     new ControllerEmu::OctagonAnalogStick(_trans("Camera Control"), gate_radius));
@@ -197,12 +202,12 @@ GCPadStatus GCPad::GetInput() const
 
   // sticks
   const auto main_stick_state = m_main_stick->GetState();
-  pad.stickX = MapFloat<u8>(main_stick_state.x, GCPadStatus::MAIN_STICK_CENTER_X);
-  pad.stickY = MapFloat<u8>(main_stick_state.y, GCPadStatus::MAIN_STICK_CENTER_Y);
+  pad.stickX = MapFloat<u8>(main_stick_state.x, GCPadStatus::MAIN_STICK_CENTER_X, 1);
+  pad.stickY = MapFloat<u8>(main_stick_state.y, GCPadStatus::MAIN_STICK_CENTER_Y, 1);
 
   const auto c_stick_state = m_c_stick->GetState();
-  pad.substickX = MapFloat<u8>(c_stick_state.x, GCPadStatus::C_STICK_CENTER_X);
-  pad.substickY = MapFloat<u8>(c_stick_state.y, GCPadStatus::C_STICK_CENTER_Y);
+  pad.substickX = MapFloat<u8>(c_stick_state.x, GCPadStatus::C_STICK_CENTER_X, 1);
+  pad.substickY = MapFloat<u8>(c_stick_state.y, GCPadStatus::C_STICK_CENTER_Y, 1);
 
   // triggers
   std::array<ControlState, 2> triggers;
@@ -223,21 +228,22 @@ void GCPad::LoadDefaults(const ControllerInterface& ciface)
 {
   EmulatedController::LoadDefaults(ciface);
 
-  // Buttons
-  m_buttons->SetControlExpression(0, "`Click 0`");  // A
-  m_buttons->SetControlExpression(1, "SPACE");  // B
-  m_buttons->SetControlExpression(2, "Ctrl");  // X
-  m_buttons->SetControlExpression(3, "F");  // Y
-  m_buttons->SetControlExpression(4, "TAB");  // Z
 #ifdef _WIN32
+  m_buttons->SetControlExpression(0, "`Click 0` | RETURN"); // A
+  m_buttons->SetControlExpression(1, "SPACE");  // B
+  m_buttons->SetControlExpression(4, "TAB");  // Z
   m_buttons->SetControlExpression(5, "GRAVE");  // Start
+  m_triggers->SetControlExpression(0, "`Click 1`"); // Lock-On
 #else
-  m_buttons->SetControlExpression(5, "GRAVE");  // Start
+  m_buttons->SetControlExpression(0, "`Click 1` | RETURN"); // A
+  m_buttons->SetControlExpression(1, "space");  // B
+  m_buttons->SetControlExpression(4, "Tab");  // Z
+  m_buttons->SetControlExpression(5, "grave");  // Start
+  m_triggers->SetControlExpression(0, "`Click 3`"); // Lock-On
 #endif
 
-  // stick modifiers to 50 %
-  m_main_stick->controls[4]->control_ref->range = 0.5f;
-  m_c_stick->controls[4]->control_ref->range = 0.5f;
+  m_buttons->SetControlExpression(2, "Ctrl"); // X
+  m_buttons->SetControlExpression(3, "F");  // Y
 
   // D-Pad
   m_dpad->SetControlExpression(0, "E & `1`");  // Up
@@ -272,13 +278,6 @@ void GCPad::LoadDefaults(const ControllerInterface& ciface)
   // Because our defaults use keyboard input, set calibration shapes to squares.
   m_c_stick->SetCalibrationFromGate(ControllerEmu::SquareStickGate(1.0));
   m_main_stick->SetCalibrationFromGate(ControllerEmu::SquareStickGate(1.0));
-
-  // Lock/Scan/Spider Ball
-#ifdef HAVE_X11
-  m_triggers->SetControlExpression(0, "`Click 3`");
-#else
-  m_triggers->SetControlExpression(0, "`Click 1`");
-#endif
 }
 
 bool GCPad::GetMicButton() const
@@ -350,12 +349,13 @@ void GCPad::SetPrimeMode(bool controller)
   m_primehack_modes->SetSelectedDevice(controller ? 1 : 0);
 }
 
-std::tuple<double, double, bool, bool> GCPad::GetPrimeSettings()
+std::tuple<double, double, bool, bool, bool> GCPad::GetPrimeSettings()
 {
   std::tuple t = std::make_tuple(
     m_primehack_camera_sensitivity.GetValue(), 0.f,
     m_primehack_invert_x.GetValue(),
-    m_primehack_invert_y.GetValue());
+    m_primehack_invert_y.GetValue(),
+    m_primehack_remap_map_controls.GetValue());
 
   return t;
 }

@@ -34,8 +34,7 @@
 #include "InputCommon/ControlReference/ExpressionParser.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
-
-constexpr int SLIDER_TICK_COUNT = 100;
+#include "InputCommon/ControllerInterface/MappingCommon.h"
 
 namespace
 {
@@ -245,8 +244,7 @@ void IOWindow::CreateMainLayout()
   m_test_button = new QPushButton(tr("Test"), this);
   m_button_box = new QDialogButtonBox();
   m_clear_button = new QPushButton(tr("Clear"));
-  m_range_slider = new QSlider(Qt::Horizontal);
-  m_range_spinbox = new QSpinBox();
+  m_scalar_spinbox = new QSpinBox();
 
   m_parse_text = new InputStateLineEdit([this] {
     const auto lock = m_controller->GetStateLock();
@@ -318,16 +316,20 @@ void IOWindow::CreateMainLayout()
   // Devices
   m_main_layout->addWidget(m_devices_combo);
 
-  // Range
-  auto* range_hbox = new QHBoxLayout();
-  range_hbox->addWidget(new QLabel(tr("Range")));
-  range_hbox->addWidget(m_range_slider);
-  range_hbox->addWidget(m_range_spinbox);
-  m_range_slider->setMinimum(-500);
-  m_range_slider->setMaximum(500);
-  m_range_spinbox->setMinimum(-500);
-  m_range_spinbox->setMaximum(500);
-  m_main_layout->addLayout(range_hbox);
+  // Scalar
+  auto* scalar_hbox = new QHBoxLayout();
+  // i18n: Controller input values are multiplied by this percentage value.
+  scalar_hbox->addWidget(new QLabel(tr("Multiplier")));
+  scalar_hbox->addWidget(m_scalar_spinbox);
+
+  // Outputs are not bounds checked and greater than 100% has no use case.
+  // (incoming values are always 0 or 1)
+  // Negative 100% can be used to invert force feedback wheel direction.
+  const int scalar_min_max = (m_type == Type::Input) ? 1000 : 100;
+  m_scalar_spinbox->setMinimum(-scalar_min_max);
+  m_scalar_spinbox->setMaximum(scalar_min_max);
+  // i18n: Percentage symbol.
+  m_scalar_spinbox->setSuffix(tr("%"));
 
   // Options (Buttons, Outputs) and action buttons
 
@@ -386,6 +388,8 @@ void IOWindow::CreateMainLayout()
   else
     m_functions_combo->hide();
 
+  button_vbox->addLayout(scalar_hbox);
+
   m_main_layout->addLayout(hbox, 2);
   m_main_layout->addWidget(m_expression_text, 1);
   m_main_layout->addWidget(m_parse_text);
@@ -408,8 +412,7 @@ void IOWindow::ConfigChanged()
 
   m_expression_text->setPlainText(QString::fromStdString(m_reference->GetExpression()));
   m_expression_text->moveCursor(QTextCursor::End, QTextCursor::MoveAnchor);
-  m_range_spinbox->setValue(m_reference->range * SLIDER_TICK_COUNT);
-  m_range_slider->setValue(m_reference->range * SLIDER_TICK_COUNT);
+  m_scalar_spinbox->setValue(m_reference->range * 100.0);
 
   if (m_devq.ToString().empty())
     m_devq = m_controller->GetDefaultDevice();
@@ -426,6 +429,7 @@ void IOWindow::Update()
 void IOWindow::ConnectWidgets()
 {
   connect(m_select_button, &QPushButton::clicked, [this] { AppendSelectedOption(); });
+  connect(m_option_list, &QTableWidget::cellDoubleClicked, [this] { AppendSelectedOption(); });
   connect(&Settings::Instance(), &Settings::ReleaseDevices, this, &IOWindow::ReleaseDevices);
   connect(&Settings::Instance(), &Settings::DevicesChanged, this, &IOWindow::UpdateDeviceList);
 
@@ -434,7 +438,7 @@ void IOWindow::ConnectWidgets()
 
   connect(m_button_box, &QDialogButtonBox::clicked, this, &IOWindow::OnDialogButtonPressed);
   connect(m_devices_combo, &QComboBox::currentTextChanged, this, &IOWindow::OnDeviceChanged);
-  connect(m_range_spinbox, qOverload<int>(&QSpinBox::valueChanged), this,
+  connect(m_scalar_spinbox, qOverload<int>(&QSpinBox::valueChanged), this,
           &IOWindow::OnRangeChanged);
 
   connect(m_expression_text, &QPlainTextEdit::textChanged,
@@ -485,9 +489,10 @@ void IOWindow::AppendSelectedOption()
   if (m_option_list->currentRow() < 0)
     return;
 
-  m_expression_text->insertPlainText(MappingCommon::GetExpressionForControl(
-      m_option_list->item(m_option_list->currentRow(), 0)->text(), m_devq,
-      m_controller->GetDefaultDevice()));
+  m_expression_text->insertPlainText(
+      QString::fromStdString(ciface::MappingCommon::GetExpressionForControl(
+          m_option_list->item(m_option_list->currentRow(), 0)->text().toStdString(), m_devq,
+          m_controller->GetDefaultDevice())));
 }
 
 void IOWindow::OnDeviceChanged()
@@ -526,7 +531,7 @@ void IOWindow::OnDetectButtonPressed()
 {
   const auto expression =
       MappingCommon::DetectExpression(m_detect_button, g_controller_interface, {m_devq.ToString()},
-                                      m_devq, MappingCommon::Quote::Off);
+                                      m_devq, ciface::MappingCommon::Quote::Off);
 
   if (expression.isEmpty())
     return;
@@ -545,9 +550,7 @@ void IOWindow::OnTestButtonPressed()
 
 void IOWindow::OnRangeChanged(int value)
 {
-  m_reference->range = static_cast<double>(value) / SLIDER_TICK_COUNT;
-  m_range_spinbox->setValue(m_reference->range * SLIDER_TICK_COUNT);
-  m_range_slider->setValue(m_reference->range * SLIDER_TICK_COUNT);
+  m_reference->range = value / 100.0;
 }
 
 void IOWindow::ReleaseDevices()
