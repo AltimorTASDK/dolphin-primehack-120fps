@@ -119,6 +119,7 @@ struct SConfig
   bool bMMU = false;
   bool bLowDCBZHack = false;
   int iBBDumpPort = 0;
+  int iVideoRate = 8;
   bool bFastDiscSpeed = false;
 
   bool bSyncGPU = false;

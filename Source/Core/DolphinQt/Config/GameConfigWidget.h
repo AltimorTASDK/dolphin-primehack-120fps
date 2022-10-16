@@ -19,6 +19,7 @@ class QCheckBox;
 class QComboBox;
 class QPushButton;
 class QSlider;
+class QLabel;
 class QSpinBox;
 class QTabWidget;
 
@@ -34,6 +35,7 @@ private:
 
   void LoadSettings();
   void SaveSettings();
+  void UpdateValueText();
 
   void SaveCheckBox(QCheckBox* checkbox, const std::string& section, const std::string& key);
   void LoadCheckBox(QCheckBox* checkbox, const std::string& section, const std::string& key);
@@ -51,6 +53,8 @@ private:
   QCheckBox* m_enable_fast_disc;
   QCheckBox* m_use_dsp_hle;
   QCheckBox* m_use_monoscopic_shadows;
+  QSlider* m_video_rate_hack;
+  QLabel* m_video_rate_hack_value;
 
   QPushButton* m_refresh_config;
 

@@ -89,6 +89,7 @@ private:
   float fSyncGpuOverclock = 0;
   bool bFastDiscSpeed = false;
   bool bHLE_BS2 = false;
+  int iVideoRate;
   int iSelectedLanguage = 0;
   PowerPC::CPUCore cpu_core = PowerPC::CPUCore::Interpreter;
   float m_EmulationSpeed = 0;
@@ -120,6 +121,7 @@ void ConfigCache::SaveConfig(const SConfig& config)
   fSyncGpuOverclock = config.fSyncGpuOverclock;
   bFastDiscSpeed = config.bFastDiscSpeed;
   bHLE_BS2 = config.bHLE_BS2;
+  iVideoRate = config.iVideoRate;
   iSelectedLanguage = config.SelectedLanguage;
   cpu_core = config.cpu_core;
   m_EmulationSpeed = config.m_EmulationSpeed;
@@ -164,6 +166,7 @@ void ConfigCache::RestoreConfig(SConfig* config)
   config->fSyncGpuOverclock = fSyncGpuOverclock;
   config->bFastDiscSpeed = bFastDiscSpeed;
   config->bHLE_BS2 = bHLE_BS2;
+  config->iVideoRate = iVideoRate;
   config->SelectedLanguage = iSelectedLanguage;
   config->cpu_core = cpu_core;
 
@@ -256,6 +259,7 @@ bool BootCore(std::unique_ptr<BootParameters> boot, const WindowSystemInfo& wsi)
     core_section->Get("DisableICache", &StartUp.bDisableICache, StartUp.bDisableICache);
     core_section->Get("MMU", &StartUp.bMMU, StartUp.bMMU);
     core_section->Get("LowDCBZHack", &StartUp.bLowDCBZHack, StartUp.bLowDCBZHack);
+    core_section->Get("Video_Rate", &StartUp.iVideoRate, StartUp.iVideoRate);
     core_section->Get("SyncGPU", &StartUp.bSyncGPU, StartUp.bSyncGPU);
     core_section->Get("FastDiscSpeed", &StartUp.bFastDiscSpeed, StartUp.bFastDiscSpeed);
     core_section->Get("CPUCore", &StartUp.cpu_core, StartUp.cpu_core);

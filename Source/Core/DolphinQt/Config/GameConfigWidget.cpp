@@ -91,6 +91,10 @@ void GameConfigWidget::CreateWidgets()
   m_enable_fast_disc = new QCheckBox(tr("Speed up Disc Transfer Rate"));
   m_use_dsp_hle = new QCheckBox(tr("DSP HLE (fast)"));
   m_deterministic_dual_core = new QComboBox;
+  m_video_rate_hack = new QSlider(Qt::Horizontal);
+  m_video_rate_hack->setMinimum(8);
+  m_video_rate_hack->setMaximum(32);
+  m_video_rate_hack_value = new QLabel(tr("1x"));
 
   for (const auto& item : {tr("Not Set"), tr("auto"), tr("none"), tr("fake-completion")})
     m_deterministic_dual_core->addItem(item);
@@ -104,6 +108,7 @@ void GameConfigWidget::CreateWidgets()
                             "in Dual core mode. (ON = Compatible, OFF = Fast)"));
   m_enable_fast_disc->setToolTip(tr("Enable fast disc access. This can cause crashes and other "
                                     "problems in some games. (ON = Fast, OFF = Compatible)"));
+  m_video_rate_hack->setToolTip(tr("Multiply the rate of video interruptions to allow High framerate hacks"));
 
   core_layout->addWidget(m_enable_dual_core, 0, 0);
   core_layout->addWidget(m_enable_mmu, 1, 0);
@@ -113,6 +118,9 @@ void GameConfigWidget::CreateWidgets()
   core_layout->addWidget(m_use_dsp_hle, 5, 0);
   core_layout->addWidget(new QLabel(tr("Deterministic dual core:")), 6, 0);
   core_layout->addWidget(m_deterministic_dual_core, 6, 1);
+  core_layout->addWidget(new QLabel(tr("Video rate hack")), 7, 0);
+  core_layout->addWidget(m_video_rate_hack_value, 7, 1);
+  core_layout->addWidget(m_video_rate_hack, 7, 2);
 
   // Stereoscopy
   auto* stereoscopy_box = new QGroupBox(tr("Stereoscopy"));
@@ -210,6 +218,8 @@ void GameConfigWidget::ConnectWidgets()
     connect(box, &QCheckBox::stateChanged, this, &GameConfigWidget::SaveSettings);
 
   connect(m_deterministic_dual_core, qOverload<int>(&QComboBox::currentIndexChanged), this,
+          &GameConfigWidget::SaveSettings);
+  connect(m_video_rate_hack, qOverload<int>(&QSlider::valueChanged), this,
           &GameConfigWidget::SaveSettings);
   connect(m_depth_slider, qOverload<int>(&QSlider::valueChanged), this,
           &GameConfigWidget::SaveSettings);
@@ -317,7 +327,17 @@ void GameConfigWidget::LoadSettings()
 
   m_convergence_spin->setValue(convergence);
 
+  // Video Rate Hack
+  int vrh = 8;
+
+  m_gameini_default.GetIfExists("Core", "Video_Rate", &vrh);
+  m_gameini_local.GetIfExists("Core", "Video_Rate", &vrh);
+
+  m_video_rate_hack->setValue(vrh);
+
   LoadCheckBox(m_use_monoscopic_shadows, "Video_Stereoscopy", "StereoEFBMonoDepth");
+
+  UpdateValueText();
 }
 
 void GameConfigWidget::SaveSettings()
@@ -388,6 +408,18 @@ void GameConfigWidget::SaveSettings()
     }
   }
 
+  // Video Rate Hack
+  int vrh = m_video_rate_hack->value();
+
+  {
+    int default_value = 0;
+    if (!(m_gameini_default.GetIfExists("Core", "Video_Rate", &default_value) &&
+          default_value == vrh))
+    {
+      m_gameini_local.GetOrCreateSection("Core")->Set("Video_Rate", vrh);
+    }
+  }
+
   SaveCheckBox(m_use_monoscopic_shadows, "Video_Stereoscopy", "StereoEFBMonoDepth");
 
   bool success = m_gameini_local.Save(m_gameini_local_path.toStdString());
@@ -395,4 +427,12 @@ void GameConfigWidget::SaveSettings()
   // If the resulting file is empty, delete it. Kind of a hack, but meh.
   if (success && File::GetSize(m_gameini_local_path.toStdString()) == 0)
     File::Delete(m_gameini_local_path.toStdString());
+
+  UpdateValueText();
+}
+
+void GameConfigWidget::UpdateValueText()
+{
+  const auto vrh_text = StringFromFormat("%.2fx", (float)m_video_rate_hack->value() / 8);
+  m_video_rate_hack_value->setText(tr(vrh_text.c_str()));
 }

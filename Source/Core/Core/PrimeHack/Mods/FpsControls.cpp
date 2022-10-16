@@ -1,3 +1,5 @@
+#include "Core/ConfigManager.h"
+
 #include "Core/PrimeHack/Mods/FpsControls.h"
 
 #include "Core/PrimeHack/Mods/ContextSensitiveControls.h"
@@ -177,7 +179,7 @@ void FpsControls::calculate_pitch_to_target(float target_pitch)
 #pragma optimize("", on)
 
 float FpsControls::calculate_yaw_vel() {
-  return GetHorizontalAxis() * GetSensitivity() * (InvertedX() ? 1.f : -1.f);;
+  return GetHorizontalAxis() * GetSensitivity() * (InvertedX() ? 1.f : -1.f);
 }
 
 void FpsControls::handle_beam_visor_switch(std::array<int, 4> const &beams,

@@ -732,6 +732,7 @@ void SConfig::LoadDefaults()
   bMMU = false;
   bLowDCBZHack = false;
   iBBDumpPort = -1;
+  iVideoRate = 8;
   bSyncGPU = false;
   bFastDiscSpeed = false;
   SelectedLanguage = 0;
