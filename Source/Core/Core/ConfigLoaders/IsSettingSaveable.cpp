@@ -91,6 +91,7 @@ bool IsSettingSaveable(const Config::Location& config_location)
       &Config::MAIN_FLOAT_EXCEPTIONS.GetLocation(),
       &Config::MAIN_DIVIDE_BY_ZERO_EXCEPTIONS.GetLocation(),
       &Config::MAIN_LOW_DCBZ_HACK.GetLocation(),
+      &Config::MAIN_VIDEO_RATE.GetLocation(),
       &Config::MAIN_FPRF.GetLocation(),
       &Config::MAIN_ACCURATE_NANS.GetLocation(),
       &Config::GetInfoForAdapterRumble(0).GetLocation(),

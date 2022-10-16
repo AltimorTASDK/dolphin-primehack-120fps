@@ -721,7 +721,7 @@ u32 GetTargetRefreshRateDenominator()
 
 u32 GetTicksPerSample()
 {
-  return 2 * SystemTimers::GetTicksPerSecond() / ((s_clock_freqs[m_Clock] * SConfig::GetInstance().iVideoRate) >> 3);
+  return 2 * SystemTimers::GetTicksPerSecond() / ((s_clock_freqs[m_Clock] * Config::Get(Config::MAIN_VIDEO_RATE)) >> 3);
 }
 
 u32 GetTicksPerHalfLine()
