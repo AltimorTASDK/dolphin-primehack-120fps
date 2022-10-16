@@ -15,6 +15,9 @@
     <Import Project="$(VSPropsDir)ClDisableAllWarnings.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Label="Vcpkg">
+    <VcpkgEnabled>false</VcpkgEnabled>
+  </PropertyGroup>
   <ItemGroup>
     <ClCompile Include="AAFilter.cpp" />
     <ClCompile Include="BPMDetect.cpp" />

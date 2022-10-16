@@ -16,6 +16,9 @@
     <Import Project="$(VSPropsDir)PCHUse.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Label="Vcpkg">
+    <VcpkgEnabled>false</VcpkgEnabled>
+  </PropertyGroup>
   <Import Project="DolphinLib.props" />
   <ImportGroup Condition="'$(Platform)'=='x64'">
     <Import Project="DolphinLib.x64.props" />
